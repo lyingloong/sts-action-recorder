@@ -5,6 +5,8 @@ import com.megacrit.cardcrawl.dungeons.AbstractDungeon;
 import com.megacrit.cardcrawl.rooms.AbstractRoom;
 
 import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.net.InetSocketAddress;
@@ -26,10 +28,12 @@ public final class ActionRecorderRuntime {
     private final int port;
     private final int connectTimeoutMs;
     private final long reconnectIntervalMs;
+    private final String eventsFile;
     private final String recorderSession = UUID.randomUUID().toString();
 
     private Socket socket;
     private BufferedWriter writer;
+    private BufferedWriter fileWriter;
     private long nextConnectAt;
     private long eventSeq;
     private boolean inRun;
@@ -42,6 +46,8 @@ public final class ActionRecorderRuntime {
         port = integerProperty("port", 8766);
         connectTimeoutMs = integerProperty("connect_timeout_ms", 250);
         reconnectIntervalMs = integerProperty("reconnect_interval_ms", 1000);
+        eventsFile = property("events_file", "data/actionrecorder-events.jsonl");
+        openLocalFile();
     }
 
     public static ActionRecorderRuntime getInstance() {
@@ -168,7 +174,30 @@ public final class ActionRecorderRuntime {
         send(message);
     }
 
+    private void openLocalFile() {
+        try {
+            File target = new File(eventsFile);
+            File parent = target.getParentFile();
+            if (parent != null && !parent.exists() && !parent.mkdirs()) {
+                System.err.println("[ActionRecorder] cannot create event directory: " + parent);
+            }
+            fileWriter = new BufferedWriter(new OutputStreamWriter(
+                    new FileOutputStream(target, true), StandardCharsets.UTF_8));
+        } catch (IOException exc) {
+            System.err.println("[ActionRecorder] local event file unavailable: " + exc.getMessage());
+        }
+    }
+
     private void send(String message) {
+        if (fileWriter != null) {
+            try {
+                fileWriter.write(message);
+                fileWriter.newLine();
+                fileWriter.flush();
+            } catch (IOException exc) {
+                System.err.println("[ActionRecorder] local event file write failed: " + exc.getMessage());
+            }
+        }
         if (!ensureConnection()) {
             return;
         }

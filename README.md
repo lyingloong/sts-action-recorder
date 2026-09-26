@@ -20,6 +20,7 @@ ActionRecorder 是一个独立的 Slay the Spire 1 Mod，用于记录人类在�
 - 地图节点选择、卡牌奖励选牌/跳过、商店购买卡牌的显式决策 patch；
 - 事件序号、时间戳和 Mod 版本字段；
 - 断线重连和 stderr 诊断。
+- 即使 TCP 接收端未启动，也会追加写入游戏目录下的 data/actionrecorder-events.jsonl。
 
 这不是最终的“所有界面动作”实现。事件选项、药水、遗物奖励、营火和复杂多选界面仍需要在对应的 ModTheSpire patch 增加专门的事件发送，不能靠底层 GameAction 推断。
 
@@ -38,7 +39,8 @@ package 会将 target/action-recorder.jar 复制到游戏的 mods 目录。
     actionrecorder.host=127.0.0.1
     actionrecorder.port=8766
     actionrecorder.connect_timeout_ms=250
-    actionrecorder.reconnect_interval_ms=1000
+actionrecorder.reconnect_interval_ms=1000
+actionrecorder.events_file=data/actionrecorder-events.jsonl
 
 可以通过 ModTheSpire 启动 JVM 参数覆盖，例如 -Dactionrecorder.port=8767。
 
