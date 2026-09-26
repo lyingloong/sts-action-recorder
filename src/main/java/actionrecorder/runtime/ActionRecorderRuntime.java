@@ -48,6 +48,20 @@ public final class ActionRecorderRuntime {
         return INSTANCE;
     }
 
+    /**
+     * Entry point for screen patches. The patch must call this only after a
+     * user-facing choice has been accepted, not for a visual hover or a
+     * low-level effect.
+     */
+    public synchronized void recordAction(String id, String kind, String details) {
+        String payload = "\"action\":{"
+                + "\"id\":" + quote(id)
+                + ",\"kind\":" + quote(kind)
+                + (details == null || details.length() == 0 ? "" : "," + details)
+                + "}";
+        emit("action_observed", payload);
+    }
+
     public synchronized void update() {
         boolean dungeon = false;
         try {
