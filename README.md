@@ -17,10 +17,11 @@ ActionRecorder 是一个独立的 Slay the Spire 1 Mod，用于记录人类在�
 - run_started、run_ended、room_changed 生命周期事件；
 - 从 GameActionManager.cardsPlayedThisTurn 读取已确认的出牌事件；
 - 回合编号变化事件；
+- 地图节点选择、卡牌奖励选牌/跳过、商店购买卡牌的显式决策 patch；
 - 事件序号、时间戳和 Mod 版本字段；
 - 断线重连和 stderr 诊断。
 
-这不是最终的“所有界面动作”实现。地图、事件、奖励、商店、营火和多选界面需要在对应的 ModTheSpire patch 增加专门的事件发送，不能靠底层 GameAction 推断。
+这不是最终的“所有界面动作”实现。事件选项、药水、遗物奖励、营火和复杂多选界面仍需要在对应的 ModTheSpire patch 增加专门的事件发送，不能靠底层 GameAction 推断。
 
 ## 构建
 
