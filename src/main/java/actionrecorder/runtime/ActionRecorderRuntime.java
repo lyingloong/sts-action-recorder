@@ -33,6 +33,7 @@ public final class ActionRecorderRuntime {
     private final int connectTimeoutMs;
     private final long reconnectIntervalMs;
     private final String eventsDirectory;
+    private final CaptureMode captureMode;
     private final String recorderSession = UUID.randomUUID().toString();
     private final BlockingQueue<QueuedEvent> eventQueue = new LinkedBlockingQueue<QueuedEvent>();
     private volatile boolean accepting = true;
@@ -58,6 +59,7 @@ public final class ActionRecorderRuntime {
         connectTimeoutMs = integerProperty("connect_timeout_ms", 250);
         reconnectIntervalMs = integerProperty("reconnect_interval_ms", 1000);
         eventsDirectory = property("events_dir", "data/actionrecorder");
+        captureMode = CaptureMode.from(property("capture_mode", "game_actions"));
         writerThread = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -106,6 +108,9 @@ public final class ActionRecorderRuntime {
      * low-level effect.
      */
     public synchronized void recordAction(String id, String kind, String details) {
+        if (!captureMode.enabled()) {
+            return;
+        }
         String payload = "\"action\":{"
                 + "\"id\":" + quote(id)
                 + ",\"kind\":" + quote(kind)
@@ -115,6 +120,9 @@ public final class ActionRecorderRuntime {
     }
 
     public synchronized void recordRawInput(String inputType, String details) {
+        if (!captureMode.includesRawInput()) {
+            return;
+        }
         emit("raw_input", "\"input_type\":" + quote(inputType)
                 + ",\"context\":" + contextJson()
                 + (details == null || details.length() == 0 ? "" : "," + details));
@@ -144,6 +152,9 @@ public final class ActionRecorderRuntime {
     }
 
     public synchronized void update() {
+        if (!captureMode.enabled()) {
+            return;
+        }
         boolean dungeon = false;
         try {
             dungeon = AbstractDungeon.isPlayerInDungeon();
@@ -274,6 +285,7 @@ public final class ActionRecorderRuntime {
                 + "\"schema_version\":" + quote(SCHEMA_VERSION)
                 + ",\"mod_version\":" + quote(MOD_VERSION)
                 + ",\"recorder_session\":" + quote(recorderSession)
+                + ",\"capture_mode\":" + quote(captureMode.value)
                 + ",\"event_seq\":" + (++eventSeq)
                 + ",\"timestamp_ms\":" + now
                 + ",\"type\":" + quote(type)
@@ -432,6 +444,41 @@ public final class ActionRecorderRuntime {
 
     private static String sanitize(String value) {
         return value == null ? "unknown" : value.replaceAll("[^A-Za-z0-9._-]", "_");
+    }
+
+    private enum CaptureMode {
+        OFF("off", false, false),
+        GAME_ACTIONS("game_actions", true, false),
+        RAW_INPUT("raw_input", true, true);
+
+        private final String value;
+        private final boolean enabled;
+        private final boolean rawInput;
+
+        CaptureMode(String value, boolean enabled, boolean rawInput) {
+            this.value = value;
+            this.enabled = enabled;
+            this.rawInput = rawInput;
+        }
+
+        private boolean enabled() {
+            return enabled;
+        }
+
+        private boolean includesRawInput() {
+            return rawInput;
+        }
+
+        private static CaptureMode from(String value) {
+            for (CaptureMode mode : values()) {
+                if (mode.value.equalsIgnoreCase(value)) {
+                    return mode;
+                }
+            }
+            System.err.println("[ActionRecorder] unknown capture mode '" + value
+                    + "', using game_actions");
+            return GAME_ACTIONS;
+        }
     }
 
     private static final class QueuedEvent {

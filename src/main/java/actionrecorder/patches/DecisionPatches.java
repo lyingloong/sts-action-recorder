@@ -8,6 +8,9 @@ import com.megacrit.cardcrawl.cards.AbstractCard;
 import com.megacrit.cardcrawl.dungeons.AbstractDungeon;
 import com.megacrit.cardcrawl.map.MapRoomNode;
 import com.megacrit.cardcrawl.screens.CardRewardScreen;
+import com.megacrit.cardcrawl.screens.select.BossRelicSelectScreen;
+import com.megacrit.cardcrawl.actions.GameActionManager;
+import com.megacrit.cardcrawl.events.AbstractEvent;
 import com.megacrit.cardcrawl.shop.ShopScreen;
 
 /**
@@ -73,6 +76,36 @@ public final class DecisionPatches {
                     "\"card_id\":" + quote(card.cardID)
                             + ",\"card_name\":" + quote(card.name)
                             + ",\"card_uuid\":" + quote(String.valueOf(card.uuid)));
+        }
+    }
+
+    @SpirePatch(clz = GameActionManager.class, method = "endTurn")
+    public static class EndTurn {
+        @SpirePostfixPatch
+        public static void postfix(GameActionManager manager) {
+            ActionRecorderRuntime.getInstance().recordAction(
+                    "END_TURN", "end_turn", "\"turn\":" + GameActionManager.turn);
+        }
+    }
+
+    @SpirePatch(clz = AbstractEvent.class, method = "logInput")
+    public static class EventOption {
+        @SpirePostfixPatch
+        public static void postfix(AbstractEvent event, int optionIndex) {
+            ActionRecorderRuntime.getInstance().recordAction(
+                    "CHOOSE:event_option=" + optionIndex,
+                    "event_option_selected",
+                    "\"option_index\":" + optionIndex
+                            + ",\"event_class\":" + quote(event == null ? null : event.getClass().getName()));
+        }
+    }
+
+    @SpirePatch(clz = BossRelicSelectScreen.class, method = "noPick")
+    public static class BossRelicSkip {
+        @SpirePostfixPatch
+        public static void postfix(BossRelicSelectScreen screen) {
+            ActionRecorderRuntime.getInstance().recordAction(
+                    "SKIP:BOSS_RELIC", "boss_relic_skipped", "");
         }
     }
 
