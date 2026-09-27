@@ -4,7 +4,7 @@ ActionRecorder 是一个独立的 Slay the Spire 1 Mod，用于记录人类在�
 
 它与 CommunicationMod 分工不同：
 
-- CommunicationMod 负责把游戏状态提供给 Python controller；
+- CommunicationMod 可以负责把游戏状态提供给外部程序；
 - ActionRecorder 负责从游戏内部捕获玩家决策入口；
 - 外部消费者可以把状态、动作和动作后的状态合并为训练轨迹。
 
@@ -57,4 +57,4 @@ package 会将 target/action-recorder.jar 复制到游戏的 mods 目录。
 
 ## 后续实现边界
 
-新增界面动作时，应在“玩家选择被确认”的方法处发送事件，而不是在伤害、抽牌、获得格挡等底层效果处发送事件。每个动作都要能映射到 sts-agent 的规范动作 ID；无法可靠映射时应发送 unresolved_input，不能静默生成训练标签。
+新增界面动作时，应在“玩家选择被确认”的方法处发送事件，而不是在伤害、抽牌、获得格挡等底层效果处发送事件。每个动作都要能映射到本项目定义的稳定语义动作 ID；无法可靠映射时应发送 unresolved_input，不能静默生成训练标签。

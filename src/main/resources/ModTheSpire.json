@@ -1,7 +1,7 @@
 {
   "modid": "ActionRecorder",
   "name": "StS Action Recorder",
-  "author_list": ["sts-agent"],
+  "author_list": ["ActionRecorder contributors"],
   "description": "Records high-level player decision events from Slay the Spire to a local JSONL/TCP channel for human trajectory collection.",
   "version": "0.1.0",
   "sts_version": "23-08-2025",
