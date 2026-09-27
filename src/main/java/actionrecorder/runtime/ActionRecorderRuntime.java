@@ -12,14 +12,16 @@ import java.io.OutputStreamWriter;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
 /**
- * Game-side event recorder. It observes player-level outcomes and deliberately
- * does not treat every queued GameAction as a user decision.
+ * Game-side raw event recorder. Raw input is the primary data source; semantic
+ * screen patches are optional annotations for downstream consumers.
  */
 public final class ActionRecorderRuntime {
     private static final ActionRecorderRuntime INSTANCE = new ActionRecorderRuntime();
@@ -30,28 +32,32 @@ public final class ActionRecorderRuntime {
     private final int port;
     private final int connectTimeoutMs;
     private final long reconnectIntervalMs;
-    private final String eventsFile;
+    private final String eventsDirectory;
     private final String recorderSession = UUID.randomUUID().toString();
-    private final BlockingQueue<String> eventQueue = new LinkedBlockingQueue<String>();
+    private final BlockingQueue<QueuedEvent> eventQueue = new LinkedBlockingQueue<QueuedEvent>();
     private volatile boolean accepting = true;
     private final Thread writerThread;
 
     private Socket socket;
     private BufferedWriter writer;
-    private BufferedWriter fileWriter;
+    private final Map<String, BufferedWriter> fileWriters = new HashMap<String, BufferedWriter>();
     private long nextConnectAt;
     private long eventSeq;
     private boolean inRun;
     private int lastTurn = -1;
     private String lastRoom = "";
     private int lastPlayedCardCount;
+    private String savedRunId;
+    private String savedFingerprint;
+    private String activeRunId;
+    private String activeFile;
 
     private ActionRecorderRuntime() {
         host = property("host", "127.0.0.1");
         port = integerProperty("port", 8766);
         connectTimeoutMs = integerProperty("connect_timeout_ms", 250);
         reconnectIntervalMs = integerProperty("reconnect_interval_ms", 1000);
-        eventsFile = property("events_file", "data/actionrecorder-events.jsonl");
+        eventsDirectory = property("events_dir", "data/actionrecorder");
         writerThread = new Thread(new Runnable() {
             @Override
             public void run() {
@@ -72,6 +78,28 @@ public final class ActionRecorderRuntime {
         return INSTANCE;
     }
 
+    public synchronized com.google.gson.JsonElement saveRunIdentity() {
+        com.google.gson.JsonObject value = new com.google.gson.JsonObject();
+        if (savedRunId != null) {
+            value.addProperty("run_id", savedRunId);
+        }
+        if (savedFingerprint != null) {
+            value.addProperty("fingerprint", savedFingerprint);
+        }
+        return value;
+    }
+
+    public synchronized void restoreRunIdentity(com.google.gson.JsonElement value) {
+        if (value == null || !value.isJsonObject()) {
+            savedRunId = null;
+            savedFingerprint = null;
+            return;
+        }
+        com.google.gson.JsonObject object = value.getAsJsonObject();
+        savedRunId = object.has("run_id") ? object.get("run_id").getAsString() : null;
+        savedFingerprint = object.has("fingerprint") ? object.get("fingerprint").getAsString() : null;
+    }
+
     /**
      * Entry point for screen patches. The patch must call this only after a
      * user-facing choice has been accepted, not for a visual hover or a
@@ -86,6 +114,11 @@ public final class ActionRecorderRuntime {
         emit("action_observed", payload);
     }
 
+    public synchronized void recordRawInput(String inputType, String details) {
+        emit("raw_input", "\"input_type\":" + quote(inputType)
+                + (details == null || details.length() == 0 ? "" : "," + details));
+    }
+
     public synchronized void update() {
         boolean dungeon = false;
         try {
@@ -96,19 +129,30 @@ public final class ActionRecorderRuntime {
 
         if (!dungeon || AbstractDungeon.player == null) {
             if (inRun) {
-                emit("run_ended", "\"reason\":\"dungeon_left\"");
+                boolean terminal = AbstractDungeon.is_victory
+                        || AbstractDungeon.isDungeonBeaten
+                        || AbstractDungeon.player.currentHealth <= 0;
+                emit("run_ended", "\"reason\":\"dungeon_left\",\"terminal\":" + terminal);
+                if (terminal) {
+                    savedRunId = null;
+                    savedFingerprint = null;
+                }
             }
             resetRunState();
             return;
         }
 
         if (!inRun) {
+            startOrResumeRun();
             inRun = true;
             lastTurn = -1;
             lastRoom = "";
             lastPlayedCardCount = 0;
-            emit("run_started", "\"character\":" + quote(AbstractDungeon.player.chosenClass.name())
-                    + ",\"act\":" + AbstractDungeon.actNum);
+            emit("run_started", "\"run_id\":" + quote(activeRunId)
+                    + ",\"character\":" + quote(AbstractDungeon.player.chosenClass.name())
+                    + ",\"act\":" + AbstractDungeon.actNum
+                    + ",\"ascension\":" + AbstractDungeon.ascensionLevel
+                    + ",\"seed\":" + quote(String.valueOf(com.megacrit.cardcrawl.core.Settings.seed)));
         }
 
         observeRoom();
@@ -176,6 +220,28 @@ public final class ActionRecorderRuntime {
         lastTurn = -1;
         lastRoom = "";
         lastPlayedCardCount = 0;
+        activeRunId = null;
+        activeFile = null;
+    }
+
+    private void startOrResumeRun() {
+        String fingerprint = fingerprint();
+        if (savedRunId == null || savedFingerprint == null || !savedFingerprint.equals(fingerprint)) {
+            savedRunId = UUID.randomUUID().toString();
+            savedFingerprint = fingerprint;
+        }
+        activeRunId = savedRunId;
+        activeFile = new File(
+                eventsDirectory,
+                "run-" + sanitize(activeRunId) + "-" + sanitize(fingerprint) + ".jsonl"
+        ).getPath();
+    }
+
+    private String fingerprint() {
+        String character = AbstractDungeon.player == null || AbstractDungeon.player.chosenClass == null
+                ? "UNKNOWN" : AbstractDungeon.player.chosenClass.name();
+        return character + "-A" + AbstractDungeon.ascensionLevel
+                + "-seed-" + String.valueOf(com.megacrit.cardcrawl.core.Settings.seed);
     }
 
     private void emit(String type, String payload) {
@@ -187,24 +253,21 @@ public final class ActionRecorderRuntime {
                 + ",\"event_seq\":" + (++eventSeq)
                 + ",\"timestamp_ms\":" + now
                 + ",\"type\":" + quote(type)
+                + (activeRunId == null ? "" : ",\"run_id\":" + quote(activeRunId))
                 + (payload == null || payload.length() == 0 ? "" : "," + payload)
                 + "}";
         // PostUpdate and screen patches run on the game's update thread.
         // Never perform disk or socket I/O here.
-        eventQueue.offer(message);
+        String path = activeFile == null
+                ? new File(eventsDirectory, "session-" + recorderSession + ".jsonl").getPath()
+                : activeFile;
+        eventQueue.offer(new QueuedEvent(path, message));
     }
 
     private void openLocalFile() {
-        try {
-            File target = new File(eventsFile);
-            File parent = target.getParentFile();
-            if (parent != null && !parent.exists() && !parent.mkdirs()) {
-                System.err.println("[ActionRecorder] cannot create event directory: " + parent);
-            }
-            fileWriter = new BufferedWriter(new OutputStreamWriter(
-                    new FileOutputStream(target, true), StandardCharsets.UTF_8));
-        } catch (IOException exc) {
-            System.err.println("[ActionRecorder] local event file unavailable: " + exc.getMessage());
+        File parent = new File(eventsDirectory);
+        if (!parent.exists() && !parent.mkdirs()) {
+            System.err.println("[ActionRecorder] cannot create event directory: " + parent);
         }
     }
 
@@ -212,23 +275,31 @@ public final class ActionRecorderRuntime {
         openLocalFile();
         while (accepting || !eventQueue.isEmpty()) {
             try {
-                String message = eventQueue.take();
-                writeLocal(message);
-                sendTcp(message);
+                QueuedEvent event = eventQueue.take();
+                writeLocal(event);
+                sendTcp(event.message);
             } catch (InterruptedException exc) {
                 // Shutdown interrupts the worker so it can drain the queue.
             }
         }
         closeConnection();
-        closeLocalFile();
+        closeLocalFiles();
     }
 
-    private void writeLocal(String message) {
-        if (fileWriter == null) {
-            return;
-        }
+    private void writeLocal(QueuedEvent event) {
         try {
-            fileWriter.write(message);
+            BufferedWriter fileWriter = fileWriters.get(event.path);
+            if (fileWriter == null) {
+                File target = new File(event.path);
+                File parent = target.getParentFile();
+                if (parent != null && !parent.exists()) {
+                    parent.mkdirs();
+                }
+                fileWriter = new BufferedWriter(new OutputStreamWriter(
+                        new FileOutputStream(target, true), StandardCharsets.UTF_8));
+                fileWriters.put(event.path, fileWriter);
+            }
+            fileWriter.write(event.message);
             fileWriter.newLine();
             fileWriter.flush();
         } catch (IOException exc) {
@@ -301,17 +372,15 @@ public final class ActionRecorderRuntime {
         socket = null;
     }
 
-    private void closeLocalFile() {
-        if (fileWriter == null) {
-            return;
+    private void closeLocalFiles() {
+        for (BufferedWriter fileWriter : fileWriters.values()) {
+            try {
+                fileWriter.flush();
+                fileWriter.close();
+            } catch (IOException ignored) {
+            }
         }
-        try {
-            fileWriter.flush();
-            fileWriter.close();
-        } catch (IOException ignored) {
-        } finally {
-            fileWriter = null;
-        }
+        fileWriters.clear();
     }
 
     private void shutdown() {
@@ -334,6 +403,20 @@ public final class ActionRecorderRuntime {
             return Integer.parseInt(property(suffix, String.valueOf(fallback)));
         } catch (NumberFormatException ignored) {
             return fallback;
+        }
+    }
+
+    private static String sanitize(String value) {
+        return value == null ? "unknown" : value.replaceAll("[^A-Za-z0-9._-]", "_");
+    }
+
+    private static final class QueuedEvent {
+        private final String path;
+        private final String message;
+
+        private QueuedEvent(String path, String message) {
+            this.path = path;
+            this.message = message;
         }
     }
 
