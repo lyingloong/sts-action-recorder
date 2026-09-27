@@ -14,6 +14,8 @@ import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 
 /**
  * Game-side event recorder. It observes player-level outcomes and deliberately
@@ -30,6 +32,9 @@ public final class ActionRecorderRuntime {
     private final long reconnectIntervalMs;
     private final String eventsFile;
     private final String recorderSession = UUID.randomUUID().toString();
+    private final BlockingQueue<String> eventQueue = new LinkedBlockingQueue<String>();
+    private volatile boolean accepting = true;
+    private final Thread writerThread;
 
     private Socket socket;
     private BufferedWriter writer;
@@ -47,7 +52,20 @@ public final class ActionRecorderRuntime {
         connectTimeoutMs = integerProperty("connect_timeout_ms", 250);
         reconnectIntervalMs = integerProperty("reconnect_interval_ms", 1000);
         eventsFile = property("events_file", "data/actionrecorder-events.jsonl");
-        openLocalFile();
+        writerThread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                writerLoop();
+            }
+        }, "action-recorder-writer");
+        writerThread.setDaemon(true);
+        writerThread.start();
+        Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+            @Override
+            public void run() {
+                shutdown();
+            }
+        }, "action-recorder-shutdown"));
     }
 
     public static ActionRecorderRuntime getInstance() {
@@ -171,7 +189,9 @@ public final class ActionRecorderRuntime {
                 + ",\"type\":" + quote(type)
                 + (payload == null || payload.length() == 0 ? "" : "," + payload)
                 + "}";
-        send(message);
+        // PostUpdate and screen patches run on the game's update thread.
+        // Never perform disk or socket I/O here.
+        eventQueue.offer(message);
     }
 
     private void openLocalFile() {
@@ -188,16 +208,35 @@ public final class ActionRecorderRuntime {
         }
     }
 
-    private void send(String message) {
-        if (fileWriter != null) {
+    private void writerLoop() {
+        openLocalFile();
+        while (accepting || !eventQueue.isEmpty()) {
             try {
-                fileWriter.write(message);
-                fileWriter.newLine();
-                fileWriter.flush();
-            } catch (IOException exc) {
-                System.err.println("[ActionRecorder] local event file write failed: " + exc.getMessage());
+                String message = eventQueue.take();
+                writeLocal(message);
+                sendTcp(message);
+            } catch (InterruptedException exc) {
+                // Shutdown interrupts the worker so it can drain the queue.
             }
         }
+        closeConnection();
+        closeLocalFile();
+    }
+
+    private void writeLocal(String message) {
+        if (fileWriter == null) {
+            return;
+        }
+        try {
+            fileWriter.write(message);
+            fileWriter.newLine();
+            fileWriter.flush();
+        } catch (IOException exc) {
+            System.err.println("[ActionRecorder] local event file write failed: " + exc.getMessage());
+        }
+    }
+
+    private void sendTcp(String message) {
         if (!ensureConnection()) {
             return;
         }
@@ -228,7 +267,7 @@ public final class ActionRecorderRuntime {
                     + "\"schema_version\":" + quote(SCHEMA_VERSION)
                     + ",\"mod_version\":" + quote(MOD_VERSION)
                     + ",\"recorder_session\":" + quote(recorderSession)
-                    + ",\"event_seq\":" + (++eventSeq)
+                    + ",\"event_seq\":0"
                     + ",\"timestamp_ms\":" + System.currentTimeMillis()
                     + ",\"type\":\"hello\""
                     + ",\"host\":" + quote(host)
@@ -260,6 +299,29 @@ public final class ActionRecorderRuntime {
         }
         writer = null;
         socket = null;
+    }
+
+    private void closeLocalFile() {
+        if (fileWriter == null) {
+            return;
+        }
+        try {
+            fileWriter.flush();
+            fileWriter.close();
+        } catch (IOException ignored) {
+        } finally {
+            fileWriter = null;
+        }
+    }
+
+    private void shutdown() {
+        accepting = false;
+        writerThread.interrupt();
+        try {
+            writerThread.join(2000L);
+        } catch (InterruptedException ignored) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static String property(String suffix, String fallback) {
