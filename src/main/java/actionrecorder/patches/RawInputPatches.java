@@ -16,7 +16,7 @@ public final class RawInputPatches {
     @SpirePatch(clz = ScrollInputProcessor.class, method = "keyDown")
     public static class KeyDown {
         @SpirePostfixPatch
-        public static void postfix(int keycode) {
+        public static void postfix(ScrollInputProcessor processor, int keycode) {
             record("key_down", "\"keycode\":" + keycode);
         }
     }
@@ -24,7 +24,7 @@ public final class RawInputPatches {
     @SpirePatch(clz = ScrollInputProcessor.class, method = "keyUp")
     public static class KeyUp {
         @SpirePostfixPatch
-        public static void postfix(int keycode) {
+        public static void postfix(ScrollInputProcessor processor, int keycode) {
             record("key_up", "\"keycode\":" + keycode);
         }
     }
@@ -32,7 +32,7 @@ public final class RawInputPatches {
     @SpirePatch(clz = ScrollInputProcessor.class, method = "keyTyped")
     public static class KeyTyped {
         @SpirePostfixPatch
-        public static void postfix(char character) {
+        public static void postfix(ScrollInputProcessor processor, char character) {
             record("key_typed", "\"character\":" + quote(String.valueOf(character)));
         }
     }
@@ -40,7 +40,7 @@ public final class RawInputPatches {
     @SpirePatch(clz = ScrollInputProcessor.class, method = "touchDown")
     public static class TouchDown {
         @SpirePostfixPatch
-        public static void postfix(int screenX, int screenY, int pointer, int button) {
+        public static void postfix(ScrollInputProcessor processor, int screenX, int screenY, int pointer, int button) {
             record("mouse_down", "\"x\":" + screenX + ",\"y\":" + screenY
                     + ",\"pointer\":" + pointer + ",\"button\":" + button);
         }
@@ -49,7 +49,7 @@ public final class RawInputPatches {
     @SpirePatch(clz = ScrollInputProcessor.class, method = "touchUp")
     public static class TouchUp {
         @SpirePostfixPatch
-        public static void postfix(int screenX, int screenY, int pointer, int button) {
+        public static void postfix(ScrollInputProcessor processor, int screenX, int screenY, int pointer, int button) {
             record("mouse_up", "\"x\":" + screenX + ",\"y\":" + screenY
                     + ",\"pointer\":" + pointer + ",\"button\":" + button);
         }
@@ -58,7 +58,7 @@ public final class RawInputPatches {
     @SpirePatch(clz = ScrollInputProcessor.class, method = "touchDragged")
     public static class TouchDragged {
         @SpirePostfixPatch
-        public static void postfix(int screenX, int screenY, int pointer) {
+        public static void postfix(ScrollInputProcessor processor, int screenX, int screenY, int pointer) {
             record("mouse_dragged", "\"x\":" + screenX + ",\"y\":" + screenY
                     + ",\"pointer\":" + pointer);
         }
@@ -67,7 +67,7 @@ public final class RawInputPatches {
     @SpirePatch(clz = ScrollInputProcessor.class, method = "mouseMoved")
     public static class MouseMoved {
         @SpirePostfixPatch
-        public static void postfix(int screenX, int screenY) {
+        public static void postfix(ScrollInputProcessor processor, int screenX, int screenY) {
             record("mouse_moved", "\"x\":" + screenX + ",\"y\":" + screenY);
         }
     }
@@ -75,7 +75,7 @@ public final class RawInputPatches {
     @SpirePatch(clz = ScrollInputProcessor.class, method = "scrolled")
     public static class Scrolled {
         @SpirePostfixPatch
-        public static void postfix(int amount) {
+        public static void postfix(ScrollInputProcessor processor, int amount) {
             record("mouse_scrolled", "\"amount\":" + amount);
         }
     }
