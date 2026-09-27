@@ -1,8 +1,12 @@
 package actionrecorder.runtime;
 
 import com.megacrit.cardcrawl.cards.AbstractCard;
+import com.megacrit.cardcrawl.cards.CardQueueItem;
 import com.megacrit.cardcrawl.dungeons.AbstractDungeon;
+import com.megacrit.cardcrawl.monsters.AbstractMonster;
 import com.megacrit.cardcrawl.rooms.AbstractRoom;
+import com.megacrit.cardcrawl.screens.select.GridCardSelectScreen;
+import com.megacrit.cardcrawl.screens.select.HandCardSelectScreen;
 
 import java.io.BufferedWriter;
 import java.io.File;
@@ -47,7 +51,8 @@ public final class ActionRecorderRuntime {
     private boolean inRun;
     private int lastTurn = -1;
     private String lastRoom = "";
-    private int lastPlayedCardCount;
+    private String lastGridSelectionSignature = "";
+    private String lastHandSelectionSignature = "";
     private String savedRunId;
     private String savedFingerprint;
     private String activeRunId;
@@ -166,7 +171,7 @@ public final class ActionRecorderRuntime {
             if (inRun) {
                 boolean terminal = AbstractDungeon.is_victory
                         || AbstractDungeon.isDungeonBeaten
-                        || AbstractDungeon.player.currentHealth <= 0;
+                        || (AbstractDungeon.player != null && AbstractDungeon.player.currentHealth <= 0);
                 emit("run_ended", "\"reason\":\"dungeon_left\",\"terminal\":" + terminal);
                 if (terminal) {
                     savedRunId = null;
@@ -182,7 +187,8 @@ public final class ActionRecorderRuntime {
             inRun = true;
             lastTurn = -1;
             lastRoom = "";
-            lastPlayedCardCount = 0;
+            lastGridSelectionSignature = "";
+            lastHandSelectionSignature = "";
             emit("run_started", "\"run_id\":" + quote(activeRunId)
                     + ",\"character\":" + quote(AbstractDungeon.player.chosenClass.name())
                     + ",\"act\":" + AbstractDungeon.actNum
@@ -225,36 +231,139 @@ public final class ActionRecorderRuntime {
             lastTurn = turn;
         }
 
-        List<AbstractCard> played = AbstractDungeon.actionManager.cardsPlayedThisTurn;
-        if (played == null) {
+    }
+
+    /** Records a card at the semantic point where the game queues it. */
+    public synchronized void recordCardQueued(CardQueueItem item) {
+        if (!captureMode.enabled() || item == null || item.card == null) {
             return;
         }
-        if (played.size() < lastPlayedCardCount) {
-            lastPlayedCardCount = played.size();
+        AbstractCard card = item.card;
+        int handIndex = -1;
+        if (AbstractDungeon.player != null && AbstractDungeon.player.hand != null) {
+            handIndex = AbstractDungeon.player.hand.group.indexOf(card);
         }
-        for (int index = lastPlayedCardCount; index < played.size(); index++) {
-            AbstractCard card = played.get(index);
-            if (card == null) {
-                continue;
+        int targetIndex = -1;
+        String targetId = null;
+        if (item.monster != null && AbstractDungeon.getCurrRoom() != null
+                && AbstractDungeon.getCurrRoom().monsters != null
+                && AbstractDungeon.getCurrRoom().monsters.monsters != null) {
+            targetIndex = AbstractDungeon.getCurrRoom().monsters.monsters.indexOf(item.monster);
+            targetId = item.monster.id;
+        }
+        String id = "PLAY:card=" + (handIndex < 0 ? "?" : String.valueOf(handIndex + 1))
+                + ":target=" + (targetIndex < 0 ? "none" : String.valueOf(targetIndex));
+        String details = "\"card_id\":" + quote(card.cardID)
+                + ",\"card_name\":" + quote(card.name)
+                + ",\"card_uuid\":" + quote(String.valueOf(card.uuid))
+                + ",\"hand_index\":" + handIndex
+                + ",\"target_index\":" + targetIndex
+                + ",\"target_id\":" + quote(targetId)
+                + ",\"energy_on_use\":" + item.energyOnUse
+                + ",\"autoplay\":" + item.autoplayCard;
+        recordAction(id, "play_card", details);
+    }
+
+    /** Emits selection changes once, preserving multi-card interactions. */
+    public synchronized void recordGridSelection(GridCardSelectScreen screen) {
+        if (!captureMode.enabled() || screen == null || screen.selectedCards == null) {
+            return;
+        }
+        StringBuilder signature = new StringBuilder();
+        for (AbstractCard card : screen.selectedCards) {
+            if (card != null) {
+                signature.append(card.uuid).append(';');
             }
-            String payload = "\"action\":{"
-                    + "\"id\":" + quote("PLAY:card_uuid=" + card.uuid)
-                    + ",\"kind\":\"play_card\""
-                    + ",\"card_id\":" + quote(card.cardID)
-                    + ",\"card_name\":" + quote(card.name)
-                    + ",\"card_uuid\":" + quote(String.valueOf(card.uuid))
-                    + ",\"turn\":" + turn
-                    + "}";
-            emit("action_observed", payload);
         }
-        lastPlayedCardCount = played.size();
+        String value = signature.toString();
+        if (value.equals(lastGridSelectionSignature)) {
+            return;
+        }
+        lastGridSelectionSignature = value;
+        recordAction("SELECT_CARDS:grid:" + value, "card_selection_changed",
+                "\"screen\":\"grid\",\"selected_cards\":" + cardListJson(screen.selectedCards)
+                        + ",\"for_upgrade\":" + screen.forUpgrade
+                        + ",\"for_transform\":" + screen.forTransform
+                        + ",\"for_purge\":" + screen.forPurge
+                        + ",\"for_clarity\":" + screen.forClarity);
+    }
+
+    public synchronized void recordHandSelection(HandCardSelectScreen screen) {
+        if (!captureMode.enabled() || screen == null || screen.selectedCards == null) {
+            return;
+        }
+        StringBuilder signature = new StringBuilder();
+        for (AbstractCard card : screen.selectedCards.group) {
+            if (card != null) {
+                signature.append(card.uuid).append(';');
+            }
+        }
+        String value = signature.toString();
+        if (value.equals(lastHandSelectionSignature)) {
+            return;
+        }
+        lastHandSelectionSignature = value;
+        recordAction("SELECT_CARDS:hand:" + value, "card_selection_changed",
+                "\"screen\":\"hand\",\"selected_cards\":" + cardListJson(screen.selectedCards.group));
+    }
+
+    public synchronized void recordPotionAction(String id, String kind, int slot,
+                                                 com.megacrit.cardcrawl.potions.AbstractPotion potion) {
+        if (!captureMode.enabled()) {
+            return;
+        }
+        String potionId = potion == null ? null : potion.ID;
+        String potionName = potion == null ? null : potion.name;
+        recordAction(id + ":slot=" + slot, kind,
+                "\"slot\":" + slot + ",\"potion_id\":" + quote(potionId)
+                        + ",\"potion_name\":" + quote(potionName));
+    }
+
+    public synchronized void recordPotionUseTarget(int slot,
+                                                    com.megacrit.cardcrawl.potions.AbstractPotion potion,
+                                                    AbstractMonster monster) {
+        if (!captureMode.enabled()) {
+            return;
+        }
+        int targetIndex = -1;
+        if (monster != null && AbstractDungeon.getCurrRoom() != null
+                && AbstractDungeon.getCurrRoom().monsters != null
+                && AbstractDungeon.getCurrRoom().monsters.monsters != null) {
+            targetIndex = AbstractDungeon.getCurrRoom().monsters.monsters.indexOf(monster);
+        }
+        String potionId = potion == null ? null : potion.ID;
+        String potionName = potion == null ? null : potion.name;
+        recordAction("POTION_USE:slot=" + slot + ":target=" + targetIndex,
+                "potion_use_requested",
+                "\"slot\":" + slot + ",\"potion_id\":" + quote(potionId)
+                        + ",\"potion_name\":" + quote(potionName)
+                        + ",\"target_index\":" + targetIndex
+                        + ",\"target_id\":" + quote(monster == null ? null : monster.id));
+    }
+
+    private String cardListJson(List<AbstractCard> cards) {
+        StringBuilder value = new StringBuilder("[");
+        if (cards != null) {
+            for (int index = 0; index < cards.size(); index++) {
+                if (index > 0) {
+                    value.append(',');
+                }
+                AbstractCard card = cards.get(index);
+                value.append("{\"card_id\":").append(quote(card == null ? null : card.cardID))
+                        .append(",\"card_name\":").append(quote(card == null ? null : card.name))
+                        .append(",\"card_uuid\":").append(quote(card == null ? null : String.valueOf(card.uuid)))
+                        .append('}');
+            }
+        }
+        return value.append(']').toString();
     }
 
     private void resetRunState() {
         inRun = false;
         lastTurn = -1;
         lastRoom = "";
-        lastPlayedCardCount = 0;
+        lastGridSelectionSignature = "";
+        lastHandSelectionSignature = "";
         activeRunId = null;
         activeFile = null;
     }
