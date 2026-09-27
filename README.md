@@ -17,6 +17,7 @@ ActionRecorder 是一个独立的 Slay the Spire 1 Mod，用于记录人类在�
 - 按每局保存独立 JSONL 文件；
 - 通过 BaseMod 存档字段保存 run identity，退出后重进继续追加原文件；
 - 键盘按下/释放/输入、鼠标移动/按下/释放/拖拽、滚轮等原始输入事件；
+- 手柄按钮按下/释放原始输入事件；
 - run_started、run_ended、room_changed 生命周期事件；
 - 可识别的地图节点、卡牌奖励、商店、出牌等附加语义事件；
 - 事件序号、时间戳和 Mod 版本字段；
