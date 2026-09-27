@@ -116,7 +116,31 @@ public final class ActionRecorderRuntime {
 
     public synchronized void recordRawInput(String inputType, String details) {
         emit("raw_input", "\"input_type\":" + quote(inputType)
+                + ",\"context\":" + contextJson()
                 + (details == null || details.length() == 0 ? "" : "," + details));
+    }
+
+    private String contextJson() {
+        if (AbstractDungeon.player == null) {
+            return "{\"in_game\":false}";
+        }
+        String room = "";
+        try {
+            AbstractRoom current = AbstractDungeon.getCurrRoom();
+            room = current == null ? "" : current.getClass().getName();
+        } catch (Throwable ignored) {
+        }
+        int turn = AbstractDungeon.actionManager == null ? -1 : AbstractDungeon.actionManager.turn;
+        return "{"
+                + "\"in_game\":true"
+                + ",\"character\":" + quote(AbstractDungeon.player.chosenClass.name())
+                + ",\"ascension\":" + AbstractDungeon.ascensionLevel
+                + ",\"act\":" + AbstractDungeon.actNum
+                + ",\"floor\":" + AbstractDungeon.floorNum
+                + ",\"screen\":" + quote(String.valueOf(AbstractDungeon.screen))
+                + ",\"room\":" + quote(room)
+                + ",\"turn\":" + turn
+                + "}";
     }
 
     public synchronized void update() {
