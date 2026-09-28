@@ -1,5 +1,8 @@
 # TCP Protocol
 
+TCP 只传输 ActionRecorder 事件；事件中的状态对象必须遵循
+[STATE_SCHEMA.md](STATE_SCHEMA.md)。TCP 不定义另一套状态格式。
+
 ActionRecorder exposes an optional, one-way TCP event stream. The recorder runs inside the game and acts as a TCP client. A consumer must run a TCP server and listen on the configured address.
 
 ## Transport
@@ -67,7 +70,14 @@ After `hello`, messages use the common event envelope:
   "timestamp_ms": 1780000000500,
   "type": "action_observed",
   "run_id": "2c0f...",
+  "step_id": "2c0f...:12",
+  "observation_before": {"floor": 2},
+  "available_actions": {"commands": ["play", "end"], "choices": []},
   "action": {
+    "id": "END_TURN",
+    "kind": "end_turn"
+  },
+  "chosen_action": {
     "id": "END_TURN",
     "kind": "end_turn"
   }
@@ -89,6 +99,7 @@ Envelope fields:
 | `payload` | Event-specific fields, such as `action` or `context`. |
 
 There is no schema negotiation. Consumers should ignore fields they do not need and tolerate additional fields in future schema versions.
+`step_resolved` messages have the same `step_id` as their `action_observed` message and supply `observation_after` plus a `resolution` reason. See [EVENT_SCHEMA.md](EVENT_SCHEMA.md) for null-state handling and the limits of `available_actions`.
 
 ## Minimal server examples
 

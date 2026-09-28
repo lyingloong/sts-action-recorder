@@ -7,6 +7,8 @@ import com.megacrit.cardcrawl.monsters.AbstractMonster;
 import com.megacrit.cardcrawl.rooms.AbstractRoom;
 import com.megacrit.cardcrawl.screens.select.GridCardSelectScreen;
 import com.megacrit.cardcrawl.screens.select.HandCardSelectScreen;
+import com.megacrit.cardcrawl.actions.GameActionManager;
+import com.google.gson.JsonObject;
 
 import java.io.BufferedWriter;
 import java.io.File;
@@ -20,6 +22,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
@@ -31,6 +35,7 @@ public final class ActionRecorderRuntime {
     private static final ActionRecorderRuntime INSTANCE = new ActionRecorderRuntime();
     private static final String MOD_VERSION = "0.1.0";
     private static final String SCHEMA_VERSION = "0.1";
+    private static final long SETTLE_INTERVAL_MS = 120L;
 
     private final String host;
     private final int port;
@@ -40,6 +45,8 @@ public final class ActionRecorderRuntime {
     private final CaptureMode captureMode;
     private final String recorderSession = UUID.randomUUID().toString();
     private final BlockingQueue<QueuedEvent> eventQueue = new LinkedBlockingQueue<QueuedEvent>();
+    private final CommunicationStateBridge stateBridge = new CommunicationStateBridge();
+    private final Deque<JsonObject> beforeStack = new ArrayDeque<JsonObject>();
     private volatile boolean accepting = true;
     private final Thread writerThread;
 
@@ -48,6 +55,10 @@ public final class ActionRecorderRuntime {
     private final Map<String, BufferedWriter> fileWriters = new HashMap<String, BufferedWriter>();
     private long nextConnectAt;
     private long eventSeq;
+    private long stepSeq;
+    private String pendingStepId;
+    private String lastAfterCandidate;
+    private long nextSettleCheck;
     private boolean inRun;
     private int lastTurn = -1;
     private String lastRoom = "";
@@ -116,12 +127,81 @@ public final class ActionRecorderRuntime {
         if (!captureMode.enabled()) {
             return;
         }
-        String payload = "\"action\":{"
-                + "\"id\":" + quote(id)
+        JsonObject before = beforeStack.isEmpty() ? stateBridge.snapshot() : beforeStack.pop();
+        if (pendingStepId != null) {
+            resolveStep(before, "next_decision");
+        }
+        String stepId = (activeRunId == null ? recorderSession : activeRunId) + ":" + (++stepSeq);
+        String selected = "{\"id\":" + quote(id)
                 + ",\"kind\":" + quote(kind)
                 + (details == null || details.length() == 0 ? "" : "," + details)
                 + "}";
+        String payload = "\"action\":" + selected
+                + ",\"chosen_action\":" + selected
+                + ",\"step_id\":" + quote(stepId)
+                + ",\"observation_before\":" + CommunicationStateBridge.observation(before)
+                + ",\"available_actions\":" + CommunicationStateBridge.availableActions(before);
         emit("action_observed", payload);
+        pendingStepId = stepId;
+        lastAfterCandidate = null;
+        nextSettleCheck = System.currentTimeMillis() + SETTLE_INTERVAL_MS;
+    }
+
+    /** Call at the entry of a player action, before the game mutates its state. */
+    public synchronized void beginDecision() {
+        if (captureMode.enabled()) {
+            beforeStack.push(stateBridge.snapshotOrEmpty());
+        }
+    }
+
+    public synchronized void discardDecision() {
+        if (!beforeStack.isEmpty()) {
+            beforeStack.pop();
+        }
+    }
+
+    private void resolveStep(JsonObject after, String reason) {
+        if (pendingStepId == null) {
+            return;
+        }
+        emit("step_resolved", "\"step_id\":" + quote(pendingStepId)
+                + ",\"observation_after\":" + CommunicationStateBridge.observation(after)
+                + ",\"resolution\":" + quote(reason));
+        pendingStepId = null;
+        lastAfterCandidate = null;
+    }
+
+    private void settleStep() {
+        if (pendingStepId == null || System.currentTimeMillis() < nextSettleCheck) {
+            return;
+        }
+        GameActionManager manager = AbstractDungeon.actionManager;
+        AbstractRoom room = null;
+        try {
+            room = AbstractDungeon.getCurrRoom();
+        } catch (Throwable ignored) {
+            // Map and room globals can change between updates.
+        }
+        if (manager != null && (manager.currentAction != null || !manager.cardQueue.isEmpty()
+                || !manager.actions.isEmpty() || !manager.preTurnActions.isEmpty()
+                || !manager.monsterQueue.isEmpty()
+                || (room != null && room.phase == AbstractRoom.RoomPhase.COMBAT
+                && manager.phase != GameActionManager.Phase.WAITING_ON_USER))) {
+            nextSettleCheck = System.currentTimeMillis() + SETTLE_INTERVAL_MS;
+            return;
+        }
+        JsonObject after = stateBridge.snapshot();
+        if (after == null) {
+            resolveStep(null, "state_unavailable");
+            return;
+        }
+        String candidate = CommunicationStateBridge.observation(after);
+        if (candidate.equals(lastAfterCandidate)) {
+            resolveStep(after, "stable_state");
+        } else {
+            lastAfterCandidate = candidate;
+            nextSettleCheck = System.currentTimeMillis() + SETTLE_INTERVAL_MS;
+        }
     }
 
     public synchronized void recordRawInput(String inputType, String details) {
@@ -168,6 +248,7 @@ public final class ActionRecorderRuntime {
         }
 
         if (!dungeon || AbstractDungeon.player == null) {
+            resolveStep(null, "run_left_before_stable_state");
             if (inRun) {
                 boolean terminal = AbstractDungeon.is_victory
                         || AbstractDungeon.isDungeonBeaten
@@ -189,8 +270,7 @@ public final class ActionRecorderRuntime {
             lastRoom = "";
             lastGridSelectionSignature = "";
             lastHandSelectionSignature = "";
-            emit("run_started", "\"run_id\":" + quote(activeRunId)
-                    + ",\"character\":" + quote(AbstractDungeon.player.chosenClass.name())
+            emit("run_started", "\"character\":" + quote(AbstractDungeon.player.chosenClass.name())
                     + ",\"act\":" + AbstractDungeon.actNum
                     + ",\"ascension\":" + AbstractDungeon.ascensionLevel
                     + ",\"seed\":" + quote(String.valueOf(com.megacrit.cardcrawl.core.Settings.seed)));
@@ -198,6 +278,7 @@ public final class ActionRecorderRuntime {
 
         observeRoom();
         observeCombat();
+        settleStep();
     }
 
     private void observeRoom() {
@@ -210,10 +291,11 @@ public final class ActionRecorderRuntime {
         if (room == null) {
             return;
         }
-        String roomName = room.getClass().getName();
+        String roomName = room.getClass().getName() + ":" + AbstractDungeon.actNum
+                + ":" + AbstractDungeon.floorNum;
         if (!roomName.equals(lastRoom)) {
             lastRoom = roomName;
-            emit("room_changed", "\"room_class\":" + quote(roomName)
+            emit("room_changed", "\"room_class\":" + quote(room.getClass().getName())
                     + ",\"floor\":" + AbstractDungeon.floorNum
                     + ",\"act\":" + AbstractDungeon.actNum);
         }
@@ -252,7 +334,7 @@ public final class ActionRecorderRuntime {
             targetId = item.monster.id;
         }
         String id = "PLAY:card=" + (handIndex < 0 ? "?" : String.valueOf(handIndex + 1))
-                + ":target=" + (targetIndex < 0 ? "none" : String.valueOf(targetIndex));
+                + (targetIndex < 0 ? "" : ":target=" + targetIndex);
         String details = "\"card_id\":" + quote(card.cardID)
                 + ",\"card_name\":" + quote(card.name)
                 + ",\"card_uuid\":" + quote(String.valueOf(card.uuid))
@@ -265,9 +347,9 @@ public final class ActionRecorderRuntime {
     }
 
     /** Emits selection changes once, preserving multi-card interactions. */
-    public synchronized void recordGridSelection(GridCardSelectScreen screen) {
+    public synchronized boolean recordGridSelection(GridCardSelectScreen screen) {
         if (!captureMode.enabled() || screen == null || screen.selectedCards == null) {
-            return;
+            return false;
         }
         StringBuilder signature = new StringBuilder();
         for (AbstractCard card : screen.selectedCards) {
@@ -277,7 +359,7 @@ public final class ActionRecorderRuntime {
         }
         String value = signature.toString();
         if (value.equals(lastGridSelectionSignature)) {
-            return;
+            return false;
         }
         lastGridSelectionSignature = value;
         recordAction("SELECT_CARDS:grid:" + value, "card_selection_changed",
@@ -286,11 +368,12 @@ public final class ActionRecorderRuntime {
                         + ",\"for_transform\":" + screen.forTransform
                         + ",\"for_purge\":" + screen.forPurge
                         + ",\"for_clarity\":" + screen.forClarity);
+        return true;
     }
 
-    public synchronized void recordHandSelection(HandCardSelectScreen screen) {
+    public synchronized boolean recordHandSelection(HandCardSelectScreen screen) {
         if (!captureMode.enabled() || screen == null || screen.selectedCards == null) {
-            return;
+            return false;
         }
         StringBuilder signature = new StringBuilder();
         for (AbstractCard card : screen.selectedCards.group) {
@@ -300,11 +383,12 @@ public final class ActionRecorderRuntime {
         }
         String value = signature.toString();
         if (value.equals(lastHandSelectionSignature)) {
-            return;
+            return false;
         }
         lastHandSelectionSignature = value;
         recordAction("SELECT_CARDS:hand:" + value, "card_selection_changed",
                 "\"screen\":\"hand\",\"selected_cards\":" + cardListJson(screen.selectedCards.group));
+        return true;
     }
 
     public synchronized void recordPotionAction(String id, String kind, int slot,
@@ -366,6 +450,9 @@ public final class ActionRecorderRuntime {
         lastHandSelectionSignature = "";
         activeRunId = null;
         activeFile = null;
+        beforeStack.clear();
+        pendingStepId = null;
+        lastAfterCandidate = null;
     }
 
     private void startOrResumeRun() {

@@ -6,14 +6,18 @@
 src/main/java/actionrecorder/
   ActionRecorder.java                 Mod entry point and BaseMod subscription
   runtime/ActionRecorderRuntime.java  Run identity, queue, JSONL and TCP output
+  runtime/CommunicationStateBridge.java Optional in-process CommunicationMod state snapshots
+  patches/CommunicationStatePatches.java Optional postfix enrichment for CommunicationMod TCP state
   patches/DecisionPatches.java        Semantic game-action patches
   patches/RawInputPatches.java        Optional keyboard/mouse input patches
   patches/ControllerInputPatches.java Optional controller input patches
 src/main/resources/ModTheSpire.json   Mod metadata
 docs/                                 Protocol and schema documentation
+  STATE_SCHEMA.md                     Canonical action-before-state contract (draft)
+  schema/state.schema.json            Machine-readable draft of the canonical state
 ```
 
-The repository deliberately does not contain the Python agent, state adapter or model code.
+The repository focuses on the Java recorder Mod, its event protocol and its state schema. External consumers should use those documented contracts.
 
 ## Build and install
 
@@ -34,13 +38,13 @@ There are currently no automated unit tests because the patches depend on the ga
 
 1. Inspect the installed StS jar with `javap` and identify the method where the game accepts the decision.
 2. Add a small ModTheSpire patch in `DecisionPatches` or a dedicated patch class.
-3. Call `ActionRecorderRuntime.getInstance().recordAction(...)` after the action succeeds. Use a stable, machine-readable `id` and a descriptive `kind`.
+3. For actions logged after the game mutates state, call `beginDecision()` in the patch prefix and `recordAction(...)` in the postfix; call `discardDecision()` when no action was accepted. Actions logged before the mutation can call `recordAction(...)` directly. The state converter runs on the game thread, so do not call it on every update frame.
 4. Put entity IDs, indices and targets in structured JSON fields. Do not encode information only in localized display text.
 5. Avoid disk and socket I/O in patches. The runtime queues events and performs I/O on its writer thread.
 6. Update `docs/EVENT_SCHEMA.md` and the action table in `README.md`.
 7. Build the jar and test both with and without a TCP consumer.
 
-Prefer semantic boundaries over low-level input hooks. For example, patch card queue insertion for playing a card, reward claiming for collecting a reward, and campfire option `useOption` for a campfire action. A semantic patch should not fire for hover, rendering, or an unaccepted click.
+Prefer semantic boundaries over low-level input hooks. In this StS build, human card play inserts directly into `cardQueue` from `AbstractPlayer.playCard()`; patching `GameActionManager.addCardQueueItem()` instead misses humans and risks recording automated plays. End-turn input goes through `EndTurnButton.disable(true)`, not `GameActionManager.endTurn()`. Generic `closeCurrentScreen()` also fires during automatic transitions: record cancel/leave at the actual cancel button instead. A semantic patch should not fire for hover, rendering, or an unaccepted click.
 
 ## Run identity and files
 

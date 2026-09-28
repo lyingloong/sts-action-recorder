@@ -6,6 +6,7 @@ import com.evacipated.cardcrawl.modthespire.lib.SpirePostfixPatch;
 import com.evacipated.cardcrawl.modthespire.lib.SpirePrefixPatch;
 import com.megacrit.cardcrawl.cards.AbstractCard;
 import com.megacrit.cardcrawl.cards.CardQueueItem;
+import com.megacrit.cardcrawl.characters.AbstractPlayer;
 import com.megacrit.cardcrawl.neow.NeowEvent;
 import com.megacrit.cardcrawl.dungeons.AbstractDungeon;
 import com.megacrit.cardcrawl.map.MapRoomNode;
@@ -31,6 +32,8 @@ import com.megacrit.cardcrawl.ui.campfire.SmithOption;
 import com.megacrit.cardcrawl.ui.campfire.TokeOption;
 import com.megacrit.cardcrawl.ui.panels.PotionPopUp;
 import com.megacrit.cardcrawl.ui.buttons.ProceedButton;
+import com.megacrit.cardcrawl.ui.buttons.EndTurnButton;
+import com.megacrit.cardcrawl.ui.buttons.CancelButton;
 import com.megacrit.cardcrawl.helpers.input.InputHelper;
 
 import java.lang.reflect.Field;
@@ -60,9 +63,12 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = CardRewardScreen.class, method = "acquireCard")
     public static class CardRewardSelection {
+        @SpirePrefixPatch
+        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
         @SpirePostfixPatch
         public static void postfix(CardRewardScreen screen, AbstractCard card) {
             if (card == null) {
+                ActionRecorderRuntime.getInstance().discardDecision();
                 return;
             }
             int index = screen == null || screen.rewardGroup == null
@@ -78,6 +84,8 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = CardRewardScreen.class, method = "skippedCards")
     public static class CardRewardSkip {
+        @SpirePrefixPatch
+        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
         @SpirePostfixPatch
         public static void postfix(CardRewardScreen screen) {
             ActionRecorderRuntime.getInstance().recordAction(
@@ -89,6 +97,8 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = CardRewardScreen.class, method = "open")
     public static class CardRewardOpened {
+        @SpirePrefixPatch
+        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
         @SpirePostfixPatch
         public static void postfix(CardRewardScreen screen) {
             ActionRecorderRuntime.getInstance().recordAction(
@@ -98,9 +108,12 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = ShopScreen.class, method = "purchaseCard")
     public static class ShopCardPurchase {
+        @SpirePrefixPatch
+        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
         @SpirePostfixPatch
         public static void postfix(ShopScreen screen, AbstractCard card) {
             if (card == null) {
+                ActionRecorderRuntime.getInstance().discardDecision();
                 return;
             }
             ActionRecorderRuntime.getInstance().recordAction(
@@ -114,9 +127,12 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = StoreRelic.class, method = "purchaseRelic")
     public static class ShopRelicPurchase {
+        @SpirePrefixPatch
+        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
         @SpirePostfixPatch
         public static void postfix(StoreRelic store) {
             if (store == null || store.relic == null) {
+                ActionRecorderRuntime.getInstance().discardDecision();
                 return;
             }
             ActionRecorderRuntime.getInstance().recordAction(
@@ -130,9 +146,12 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = StorePotion.class, method = "purchasePotion")
     public static class ShopPotionPurchase {
+        @SpirePrefixPatch
+        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
         @SpirePostfixPatch
         public static void postfix(StorePotion store) {
             if (store == null || store.potion == null) {
+                ActionRecorderRuntime.getInstance().discardDecision();
                 return;
             }
             ActionRecorderRuntime.getInstance().recordAction(
@@ -146,6 +165,8 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = ShopScreen.class, method = "purgeCard")
     public static class ShopPurge {
+        @SpirePrefixPatch
+        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
         @SpirePostfixPatch
         public static void postfix() {
             ActionRecorderRuntime.getInstance().recordAction(
@@ -155,6 +176,8 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = ShopScreen.class, method = "open")
     public static class ShopOpened {
+        @SpirePrefixPatch
+        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
         @SpirePostfixPatch
         public static void postfix(ShopScreen screen) {
             ActionRecorderRuntime.getInstance().recordAction(
@@ -162,26 +185,50 @@ public final class DecisionPatches {
         }
     }
 
-    @SpirePatch(clz = GameActionManager.class, method = "endTurn")
+    @SpirePatch(clz = EndTurnButton.class, method = "disable", paramtypez = {boolean.class})
     public static class EndTurn {
+        private static boolean wasEnabled;
+        @SpirePrefixPatch
+        public static void prefix(EndTurnButton button, boolean endTurn) {
+            wasEnabled = endTurn && button.enabled;
+            if (wasEnabled) { ActionRecorderRuntime.getInstance().beginDecision(); }
+        }
         @SpirePostfixPatch
-        public static void postfix(GameActionManager manager) {
-            ActionRecorderRuntime.getInstance().recordAction(
-                    "END_TURN", "end_turn", "\"turn\":" + GameActionManager.turn);
+        public static void postfix(EndTurnButton button, boolean endTurn) {
+            if (wasEnabled && endTurn && AbstractDungeon.player != null
+                    && AbstractDungeon.player.endTurnQueued) {
+                ActionRecorderRuntime.getInstance().recordAction(
+                        "END_TURN", "end_turn", "\"turn\":" + GameActionManager.turn);
+            } else if (wasEnabled) {
+                ActionRecorderRuntime.getInstance().discardDecision();
+            }
+            wasEnabled = false;
         }
     }
 
-    @SpirePatch(clz = GameActionManager.class, method = "addCardQueueItem",
-            paramtypez = {CardQueueItem.class, boolean.class})
+    @SpirePatch(clz = AbstractPlayer.class, method = "playCard")
     public static class CardQueued {
+        private static int queueSize;
+        @SpirePrefixPatch
+        public static void prefix(AbstractPlayer player) {
+            queueSize = AbstractDungeon.actionManager.cardQueue.size();
+            ActionRecorderRuntime.getInstance().beginDecision();
+        }
         @SpirePostfixPatch
-        public static void postfix(GameActionManager manager, CardQueueItem item, boolean autoplay) {
-            ActionRecorderRuntime.getInstance().recordCardQueued(item);
+        public static void postfix(AbstractPlayer player) {
+            if (AbstractDungeon.actionManager.cardQueue.size() > queueSize) {
+                CardQueueItem item = AbstractDungeon.actionManager.cardQueue.get(queueSize);
+                ActionRecorderRuntime.getInstance().recordCardQueued(item);
+            } else {
+                ActionRecorderRuntime.getInstance().discardDecision();
+            }
         }
     }
 
     @SpirePatch(clz = AbstractEvent.class, method = "logInput")
     public static class EventOption {
+        @SpirePrefixPatch
+        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
         @SpirePostfixPatch
         public static void postfix(AbstractEvent event, int optionIndex) {
             ActionRecorderRuntime.getInstance().recordAction(
@@ -194,6 +241,8 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = NeowEvent.class, method = "buttonEffect", paramtypez = {int.class})
     public static class NeowOption {
+        @SpirePrefixPatch
+        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
         @SpirePostfixPatch
         public static void postfix(NeowEvent event, int optionIndex) {
             ActionRecorderRuntime.getInstance().recordAction(
@@ -205,32 +254,39 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = RewardItem.class, method = "claimReward")
     public static class RewardClaim {
+        @SpirePrefixPatch
+        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
         @SpirePostfixPatch
-        public static void postfix(RewardItem item, boolean claimed) {
-            if (item == null || !claimed || item.type == null) {
-                return;
+        public static boolean postfix(boolean claimed, RewardItem item) {
+            if (item != null && claimed && item.type != null) {
+                String type = item.type.name().toLowerCase();
+                String id = "REWARD:TAKE:" + item.type.name();
+                String details = "\"reward_type\":" + quote(item.type.name())
+                        + ",\"gold\":" + item.goldAmt;
+                if (item.relic != null) {
+                    details += ",\"relic_id\":" + quote(item.relic.relicId)
+                            + ",\"relic_name\":" + quote(item.relic.name);
+                }
+                if (item.potion != null) {
+                    details += ",\"potion_id\":" + quote(item.potion.ID)
+                            + ",\"potion_name\":" + quote(item.potion.name);
+                }
+                ActionRecorderRuntime.getInstance().recordAction(id, "reward_" + type + "_claimed", details);
+            } else {
+                ActionRecorderRuntime.getInstance().discardDecision();
             }
-            String type = item.type.name().toLowerCase();
-            String id = "REWARD:TAKE:" + item.type.name();
-            String details = "\"reward_type\":" + quote(item.type.name())
-                    + ",\"gold\":" + item.goldAmt;
-            if (item.relic != null) {
-                details += ",\"relic_id\":" + quote(item.relic.relicId)
-                        + ",\"relic_name\":" + quote(item.relic.name);
-            }
-            if (item.potion != null) {
-                details += ",\"potion_id\":" + quote(item.potion.ID)
-                        + ",\"potion_name\":" + quote(item.potion.name);
-            }
-            ActionRecorderRuntime.getInstance().recordAction(id, "reward_" + type + "_claimed", details);
+            return claimed;
         }
     }
 
     @SpirePatch(clz = AbstractChest.class, method = "open", paramtypez = {boolean.class})
     public static class ChestOpen {
+        @SpirePrefixPatch
+        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
         @SpirePostfixPatch
         public static void postfix(AbstractChest chest, boolean bossChest) {
             if (chest == null) {
+                ActionRecorderRuntime.getInstance().discardDecision();
                 return;
             }
             ActionRecorderRuntime.getInstance().recordAction(
@@ -246,9 +302,12 @@ public final class DecisionPatches {
     @SpirePatch(clz = BossRelicSelectScreen.class, method = "relicObtainLogic",
             paramtypez = {AbstractRelic.class})
     public static class BossRelicPick {
+        @SpirePrefixPatch
+        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
         @SpirePostfixPatch
         public static void postfix(BossRelicSelectScreen screen, AbstractRelic relic) {
             if (relic == null) {
+                ActionRecorderRuntime.getInstance().discardDecision();
                 return;
             }
             ActionRecorderRuntime.getInstance().recordAction(
@@ -262,75 +321,144 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = GridCardSelectScreen.class, method = "update")
     public static class GridSelection {
+        private static boolean attempted;
+        @SpirePrefixPatch
+        public static void prefix() {
+            attempted = selectionInput();
+            if (attempted) { begin(); }
+        }
         @SpirePostfixPatch
         public static void postfix(GridCardSelectScreen screen) {
-            ActionRecorderRuntime.getInstance().recordGridSelection(screen);
+            if (attempted && !ActionRecorderRuntime.getInstance().recordGridSelection(screen)) {
+                ActionRecorderRuntime.getInstance().discardDecision();
+            }
+            attempted = false;
         }
     }
 
     @SpirePatch(clz = HandCardSelectScreen.class, method = "update")
     public static class HandSelection {
+        private static boolean attempted;
+        @SpirePrefixPatch
+        public static void prefix() {
+            attempted = selectionInput();
+            if (attempted) { begin(); }
+        }
         @SpirePostfixPatch
         public static void postfix(HandCardSelectScreen screen) {
-            ActionRecorderRuntime.getInstance().recordHandSelection(screen);
+            if (attempted && !ActionRecorderRuntime.getInstance().recordHandSelection(screen)) {
+                ActionRecorderRuntime.getInstance().discardDecision();
+            }
+            attempted = false;
         }
     }
 
+    private static boolean selectionInput() {
+        return InputHelper.justClickedLeft || InputHelper.justClickedRight
+                || (com.megacrit.cardcrawl.helpers.controller.CInputActionSet.select != null
+                && com.megacrit.cardcrawl.helpers.controller.CInputActionSet.select.isJustPressed());
+    }
+
     @SpirePatch(clz = RestOption.class, method = "useOption")
-    public static class CampfireRest { @SpirePostfixPatch public static void postfix(RestOption option) { campfire(option, "REST"); } }
+    public static class CampfireRest { @SpirePrefixPatch public static void prefix() { begin(); } @SpirePostfixPatch public static void postfix(RestOption option) { campfire(option, "REST"); } }
     @SpirePatch(clz = SmithOption.class, method = "useOption")
-    public static class CampfireSmith { @SpirePostfixPatch public static void postfix(SmithOption option) { campfire(option, "SMITH"); } }
+    public static class CampfireSmith { @SpirePrefixPatch public static void prefix() { begin(); } @SpirePostfixPatch public static void postfix(SmithOption option) { campfire(option, "SMITH"); } }
     @SpirePatch(clz = LiftOption.class, method = "useOption")
-    public static class CampfireLift { @SpirePostfixPatch public static void postfix(LiftOption option) { campfire(option, "LIFT"); } }
+    public static class CampfireLift { @SpirePrefixPatch public static void prefix() { begin(); } @SpirePostfixPatch public static void postfix(LiftOption option) { campfire(option, "LIFT"); } }
     @SpirePatch(clz = TokeOption.class, method = "useOption")
-    public static class CampfireToke { @SpirePostfixPatch public static void postfix(TokeOption option) { campfire(option, "TOKE"); } }
+    public static class CampfireToke { @SpirePrefixPatch public static void prefix() { begin(); } @SpirePostfixPatch public static void postfix(TokeOption option) { campfire(option, "TOKE"); } }
     @SpirePatch(clz = DigOption.class, method = "useOption")
-    public static class CampfireDig { @SpirePostfixPatch public static void postfix(DigOption option) { campfire(option, "DIG"); } }
+    public static class CampfireDig { @SpirePrefixPatch public static void prefix() { begin(); } @SpirePostfixPatch public static void postfix(DigOption option) { campfire(option, "DIG"); } }
     @SpirePatch(clz = RecallOption.class, method = "useOption")
-    public static class CampfireRecall { @SpirePostfixPatch public static void postfix(RecallOption option) { campfire(option, "RECALL"); } }
+    public static class CampfireRecall { @SpirePrefixPatch public static void prefix() { begin(); } @SpirePostfixPatch public static void postfix(RecallOption option) { campfire(option, "RECALL"); } }
+
+    private static void begin() { ActionRecorderRuntime.getInstance().beginDecision(); }
 
     private static void campfire(AbstractCampfireOption option, String action) {
         ActionRecorderRuntime.getInstance().recordAction(
                 "CAMPFIRE:" + action, "campfire_action", "\"option\":" + quote(action));
     }
 
-    @SpirePatch(clz = ProceedButton.class, method = "goToTreasureRoom")
-    public static class ProceedTreasure { @SpirePostfixPatch public static void postfix(ProceedButton button) { proceed("TREASURE"); } }
-    @SpirePatch(clz = ProceedButton.class, method = "goToTrueVictoryRoom")
-    public static class ProceedTrueVictory { @SpirePostfixPatch public static void postfix(ProceedButton button) { proceed("TRUE_VICTORY"); } }
-    @SpirePatch(clz = ProceedButton.class, method = "goToVictoryRoomOrTheDoor")
-    public static class ProceedVictory { @SpirePostfixPatch public static void postfix(ProceedButton button) { proceed("VICTORY_OR_DOOR"); } }
-    @SpirePatch(clz = ProceedButton.class, method = "goToDoubleBoss")
-    public static class ProceedDoubleBoss { @SpirePostfixPatch public static void postfix(ProceedButton button) { proceed("DOUBLE_BOSS"); } }
-    @SpirePatch(clz = ProceedButton.class, method = "goToDemoVictoryRoom")
-    public static class ProceedDemoVictory { @SpirePostfixPatch public static void postfix(ProceedButton button) { proceed("DEMO_VICTORY"); } }
-    private static void proceed(String destination) {
-        ActionRecorderRuntime.getInstance().recordAction(
-                "PROCEED:" + destination, "continue_button", "\"destination\":" + quote(destination));
-    }
-
-    @SpirePatch(clz = AbstractDungeon.class, method = "closeCurrentScreen")
-    public static class CloseScreen {
-        private static String screenBeforeClose = "";
+    @SpirePatch(clz = ProceedButton.class, method = "update")
+    public static class ProceedInput {
+        private static boolean candidate;
+        private static boolean clickedBefore;
+        private static boolean releasedOnButton;
+        private static String beforeScreen;
 
         @SpirePrefixPatch
-        public static void prefix() {
-            screenBeforeClose = String.valueOf(AbstractDungeon.screen);
+        public static void prefix(ProceedButton button) {
+            Object hitbox = field(button, "hb");
+            clickedBefore = clicked(hitbox);
+            releasedOnButton = boolField(hitbox, "clickStarted")
+                    && boolField(hitbox, "hovered") && InputHelper.justReleasedClickLeft;
+            candidate = !boolField(button, "isHidden") && (clickedBefore || releasedOnButton
+                    || (com.megacrit.cardcrawl.helpers.controller.CInputActionSet.proceed != null
+                    && com.megacrit.cardcrawl.helpers.controller.CInputActionSet.proceed.isJustPressed()));
+            if (candidate) {
+                beforeScreen = String.valueOf(AbstractDungeon.screen);
+                begin();
+            }
         }
 
         @SpirePostfixPatch
-        public static void postfix() {
-            boolean likelyLeave = "SHOP".equals(screenBeforeClose)
-                    || "COMBAT_REWARD".equals(screenBeforeClose)
-                    || "CARD_REWARD".equals(screenBeforeClose)
-                    || "BOSS_REWARD".equals(screenBeforeClose);
-            String actionId = likelyLeave ? "LEAVE" : "RETURN";
-            String actionKind = likelyLeave ? "leave_button" : "return_button";
-            ActionRecorderRuntime.getInstance().recordAction(
-                    actionId, actionKind,
-                    "\"screen_before_close\":" + quote(screenBeforeClose)
-                            + ",\"screen_after_close\":" + quote(String.valueOf(AbstractDungeon.screen))
-                            + ",\"previous_screen\":" + quote(String.valueOf(AbstractDungeon.previousScreen)));
+        public static void postfix(ProceedButton button) {
+            if (!candidate) { return; }
+            if (!clickedBefore || !clicked(field(button, "hb"))) {
+                ActionRecorderRuntime.getInstance().recordAction("PROCEED", "continue_button",
+                        "\"screen_before\":" + quote(beforeScreen));
+            } else {
+                ActionRecorderRuntime.getInstance().discardDecision();
+            }
+            candidate = false;
+        }
+    }
+
+    @SpirePatch(clz = CancelButton.class, method = "update")
+    public static class CancelScreen {
+        private static boolean candidate;
+        private static boolean clickedBefore;
+        private static boolean releasedOnButton;
+        private static boolean escapeBefore;
+        private static String beforeScreen;
+        private static boolean upgradeConfirmationBefore;
+
+        @SpirePrefixPatch
+        public static void prefix(CancelButton button) {
+            clickedBefore = button.hb.clicked;
+            releasedOnButton = button.hb.clickStarted && button.hb.hovered
+                    && InputHelper.justReleasedClickLeft;
+            escapeBefore = InputHelper.pressedEscape;
+            candidate = !button.isHidden && (clickedBefore || releasedOnButton || escapeBefore
+                    || (com.megacrit.cardcrawl.helpers.controller.CInputActionSet.cancel != null
+                    && com.megacrit.cardcrawl.helpers.controller.CInputActionSet.cancel.isJustPressed()));
+            if (candidate) {
+                beforeScreen = String.valueOf(AbstractDungeon.screen);
+                upgradeConfirmationBefore = "GRID".equals(beforeScreen)
+                        && AbstractDungeon.gridSelectScreen != null
+                        && AbstractDungeon.gridSelectScreen.confirmScreenUp;
+                begin();
+            }
+        }
+
+        @SpirePostfixPatch
+        public static void postfix(CancelButton button) {
+            if (!candidate) { return; }
+            if (button.isHidden || (clickedBefore && !button.hb.clicked)
+                    || (escapeBefore && !InputHelper.pressedEscape)
+                    || (releasedOnButton && !button.hb.clickStarted
+                    && (!beforeScreen.equals(String.valueOf(AbstractDungeon.screen))
+                    || (upgradeConfirmationBefore && AbstractDungeon.gridSelectScreen != null
+                    && !AbstractDungeon.gridSelectScreen.confirmScreenUp)))) {
+                boolean leave = "SHOP".equals(beforeScreen) || "COMBAT_REWARD".equals(beforeScreen)
+                        || "CARD_REWARD".equals(beforeScreen) || "BOSS_REWARD".equals(beforeScreen);
+                ActionRecorderRuntime.getInstance().recordAction(leave ? "LEAVE" : "RETURN",
+                        leave ? "leave_button" : "return_button",
+                        "\"screen_before_close\":" + quote(beforeScreen));
+            } else {
+                ActionRecorderRuntime.getInstance().discardDecision();
+            }
+            candidate = false;
         }
     }
 
@@ -406,6 +534,8 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = BossRelicSelectScreen.class, method = "noPick")
     public static class BossRelicSkip {
+        @SpirePrefixPatch
+        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
         @SpirePostfixPatch
         public static void postfix(BossRelicSelectScreen screen) {
             ActionRecorderRuntime.getInstance().recordAction(

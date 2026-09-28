@@ -2,7 +2,7 @@
 
 一个独立的 **Slay the Spire 1** Mod，用于记录游戏内产生的玩家游戏动作，并通过本地 JSONL 文件和可选的 TCP 流提供给外部程序。
 
-ActionRecorder 的目标是提供通用、原始、可复用的游戏轨迹数据。它不依赖 `sts-agent`、CommunicationMod 或任何特定的 Python 消费端；任何能够读取 JSONL 或 TCP JSON 流的程序都可以使用它。
+ActionRecorder 是独立的游戏轨迹记录 Mod，负责保存原始语义动作和动作前后的状态快照。推荐同时启用 CommunicationMod，以提供完整的游戏状态序列化能力。所有下游程序必须遵循 [canonical state schema](docs/STATE_SCHEMA.md)，不能各自重新定义动作前状态。当前 `available_actions` 仍是 CommunicationMod 的命令和选项线索；需要完整展开的合法动作集合时，消费者应新增明确的派生字段而不是改变该字段语义。
 
 ## 设计定位
 
@@ -10,7 +10,7 @@ ActionRecorder 和 CommunicationMod 的职责不同：
 
 - **ActionRecorder**：从游戏内部捕获已经被游戏接受的语义动作，例如出牌、地图选点、事件选择、商店购买和结束回合。
 - **CommunicationMod**：向外部程序提供当前游戏状态，并接收外部控制命令。
-- **外部消费者**：将状态、动作和动作后的状态组合成训练轨迹、分析数据或回放数据。
+- **外部消费者**：按 `step_id` 将动作前状态、动作、动作后状态组合成训练轨迹。
 
 默认模式记录游戏语义动作，不记录鼠标坐标和键盘按键，因此适合人类游玩轨迹收集。调试时可以切换到 `raw_input`，同时保留低层输入事件。
 
@@ -24,7 +24,12 @@ ActionRecorder 和 CommunicationMod 的职责不同：
 - TCP 接收端不可用时仍然持续保存本地文件。
 - TCP 连接断开后自动重连。
 - 默认覆盖 sts-agent 常用的游戏动作空间。
+- 同进程启用 CommunicationMod 时记录动作前游戏状态、可用命令和界面选项，并在界面稳定后记录关联的动作后状态；状态采集在游戏进程内完成。
+- 状态快照会补充三色心脏钥匙：`game_state.keys.ruby`（红）、`emerald`（绿）、`sapphire`（蓝）；这是从游戏 `Settings` 读取的，因为当前 CommunicationMod 转换器没有导出这三个字段。
+- 当 CommunicationMod 同时启用时，ActionRecorder 还会对其 `getCommunicationState()` 做可选的 ModTheSpire 后置补丁，因此通过 CommunicationMod TCP 端口读取的状态也包含同样的 `keys` 字段。
 - 支持可选的键盘、鼠标和手柄原始输入采集。
+
+状态字段、可见性规则、动作前后关联和版本策略见 [docs/STATE_SCHEMA.md](docs/STATE_SCHEMA.md)。机器可读的状态草案见 [docs/schema/state.schema.json](docs/schema/state.schema.json)。
 
 ## 动作覆盖
 
@@ -44,16 +49,16 @@ ActionRecorder 和 CommunicationMod 的职责不同：
 | 卡牌奖励 | `card_reward_opened`、`card_reward_selected`、`card_reward_skipped` | 打开奖励、选牌、跳过 |
 | Boss 奖励 | `boss_relic_selected`、`boss_relic_skipped` | Boss 遗物选择或跳过 |
 | 商店 | `shop_opened`、`shop_*_purchased`、`shop_card_purged` | 进入商店、购买、删牌 |
-| 界面 | `continue_button`、`return_button`、`leave_button` | 继续、返回、离开 |
+| 界面 | `continue_button`、`return_button`、`leave_button` | 战斗奖励/营火等界面的前进、锻造选牌返回、离开 |
 | 多选牌 | `card_selection_changed` | 当前选择集合及升级、转化、删除等用途标记 |
 
-语义动作在游戏接受动作的方法边界记录，而不是根据鼠标位置推断。多选牌界面会在选择集合发生变化时记录；最终确认或取消可结合后续状态事件判断。
+语义动作在游戏接受动作的方法边界记录，而不是根据鼠标位置推断。玩家出牌和结束回合从各自的玩家入口采集，不把卡牌自动入队误记为人类操作。多选牌界面会在选择集合发生变化时记录；最终确认或取消可结合后续状态事件判断。
 
 ## 安装
 
 1. 确保已经安装 Slay the Spire、ModTheSpire 和 BaseMod。
 2. 将构建出的 `target/action-recorder.jar` 放入游戏的 `mods` 目录。
-3. 在 ModTheSpire 启动器中启用 `StS Action Recorder`。
+3. 在 ModTheSpire 启动器中启用 `StS Action Recorder`。要采集状态，推荐同时启用 CommunicationMod。若 CommunicationMod 的 `runAtGameStart=true` 且 `command` 指向自动控制器，请先关闭自动启动，以免干扰人工游玩；这不影响 ActionRecorder 在游戏进程内读取状态。
 
 构建时 Maven 会自动复制 jar 到默认 Steam 安装目录下的 `mods` 目录。也可以手动复制，避免覆盖正在运行的游戏实例。
 
@@ -153,7 +158,7 @@ with socket.create_server(("127.0.0.1", 8766)) as server:
                     print(address, event["type"], event.get("event_seq"))
 ```
 
-TCP 接口只负责传输 ActionRecorder 的事件，不提供游戏状态查询或游戏控制命令。需要状态和控制时，可以让同一个外部程序同时连接 CommunicationMod。
+TCP 接口只负责传输 ActionRecorder 的事件，不提供游戏控制命令。启用 CommunicationMod 后，事件中已包含采集到的状态；需要控制游戏时可另外使用 CommunicationMod 的控制接口。
 
 ## 事件格式
 
@@ -169,6 +174,9 @@ TCP 接口只负责传输 ActionRecorder 的事件，不提供游戏状态查询
   "timestamp_ms": 1780000000000,
   "type": "action_observed",
   "run_id": "...",
+  "step_id": "...:12",
+  "observation_before": {"floor": 2, "combat_state": {}},
+  "available_actions": {"commands": ["play", "end"], "choices": []},
   "action": {
     "id": "PLAY:card=2:target=0",
     "kind": "play_card",
@@ -180,11 +188,11 @@ TCP 接口只负责传输 ActionRecorder 的事件，不提供游戏状态查询
 }
 ```
 
-生命周期事件通常包括：`hello`、`run_started`、`room_changed`、`combat_turn_changed`、`action_observed`、`raw_input` 和 `run_ended`。字段定义和事件示例见 [docs/EVENT_SCHEMA.md](docs/EVENT_SCHEMA.md)。
+生命周期和决策事件包括：`hello`、`run_started`、`room_changed`、`combat_turn_changed`、`action_observed`、`step_resolved`、`raw_input` 和 `run_ended`。`step_resolved` 用相同 `step_id` 补全动作后状态；`available_actions` 是 CommunicationMod 提供的命令/选项线索，并非展开到卡牌目标的完整合法动作列表。字段定义和异常状态见 [docs/EVENT_SCHEMA.md](docs/EVENT_SCHEMA.md)。
 
 ## 性能与可靠性
 
-游戏线程只把已经构造好的 JSON 消息放入内存队列。后台线程按“本地文件写入 -> 尝试 TCP 发送”的顺序处理事件，因此：
+游戏线程采集当前状态并把构造好的 JSON 放入内存队列，不做磁盘或网络 I/O。状态转换自身仍占用游戏线程时间，但只在动作边界和结算检查时执行，不会每帧调用。后台线程按“本地文件写入 -> 尝试 TCP 发送”的顺序处理事件，因此：
 
 - 外部 TCP 服务变慢不会直接阻塞游戏更新线程；
 - 本地文件是训练数据的可靠来源；
@@ -203,7 +211,7 @@ TCP 接口只负责传输 ActionRecorder 的事件，不提供游戏状态查询
 - [ModTheSpire](https://github.com/kiooeht/ModTheSpire)
 - [BaseMod](https://github.com/daviscook477/BaseMod)
 
-ActionRecorder 本身与 `sts-agent` 解耦；本仓库不包含 agent 的状态适配、策略推理或训练代码。
+本仓库专注于 ActionRecorder Mod、事件协议和状态规范；`sts-agent` 等外部程序按这些规范消费记录数据。
 
 ## 许可证
 
