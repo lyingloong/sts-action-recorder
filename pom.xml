@@ -15,7 +15,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.source>1.8</maven.compiler.source>
         <maven.compiler.target>1.8</maven.compiler.target>
-        <Steam.path>D:/Steam/steamapps</Steam.path>
+        <!-- Steam.path is supplied at build time with -DSteam.path=... . -->
         <SlayTheSpire.version>12-22-2020</SlayTheSpire.version>
         <ModTheSpire.version>3.23.2</ModTheSpire.version>
         <BaseMod.version>5.33.1</BaseMod.version>

@@ -1,8 +1,8 @@
 # StS Action Recorder
 
-一个独立的 **Slay the Spire 1** Mod，用于记录游戏内产生的玩家游戏动作，并通过本地 JSONL 文件和可选的 TCP 流提供给外部程序。
+一个 **Slay the Spire 1** Mod，用于记录游戏内产生的玩家游戏动作，并通过本地 JSONL 文件和可选的 TCP 流提供给外部程序。
 
-ActionRecorder 是独立的游戏轨迹记录 Mod，负责保存原始语义动作和动作前后的状态快照。推荐同时启用 CommunicationMod，以提供完整的游戏状态序列化能力。所有下游程序必须遵循 [canonical state schema](docs/STATE_SCHEMA.md)，不能各自重新定义动作前状态。当前 `available_actions` 仍是 CommunicationMod 的命令和选项线索；需要完整展开的合法动作集合时，消费者应新增明确的派生字段而不是改变该字段语义。
+ActionRecorder 负责保存原始语义动作和动作前后的状态快照。推荐同时启用 CommunicationMod，以提供完整的游戏状态序列化能力。所有下游程序必须遵循 [canonical state schema](docs/STATE_SCHEMA.md)。
 
 ## 设计定位
 
@@ -60,7 +60,7 @@ ActionRecorder 和 CommunicationMod 的职责不同：
 2. 将构建出的 `target/action-recorder.jar` 放入游戏的 `mods` 目录。
 3. 在 ModTheSpire 启动器中启用 `StS Action Recorder`。要采集状态，推荐同时启用 CommunicationMod。若 CommunicationMod 的 `runAtGameStart=true` 且 `command` 指向自动控制器，请先关闭自动启动，以免干扰人工游玩；这不影响 ActionRecorder 在游戏进程内读取状态。
 
-构建时 Maven 会自动复制 jar 到默认 Steam 安装目录下的 `mods` 目录。也可以手动复制，避免覆盖正在运行的游戏实例。
+构建时 Maven 会自动复制 jar 到 `Steam.path/common/SlayTheSpire/mods`。也可以手动复制，避免覆盖正在运行的游戏实例。
 
 ## 构建
 
@@ -70,17 +70,18 @@ ActionRecorder 和 CommunicationMod 的职责不同：
 - Maven 3.x；
 - 本机可访问 Slay the Spire、BaseMod 和 ModTheSpire 的 jar 文件。
 
-默认路径是 `D:/Steam/steamapps`。在 Windows PowerShell 中：
+不要把本机的 Java、Maven 或 Steam 路径写入仓库。构建时通过环境变量和 Maven 参数传入本机路径。在 Windows PowerShell 中：
 
 ```powershell
-$env:JAVA_HOME = "D:\UserPrograms\Java\corretto-1.8.0_462"
-& "D:\UserPrograms\maven\apache-maven-3.9.16\bin\mvn.cmd" clean package
+$env:JAVA_HOME = "C:\path\to\jdk8"
+$env:STS_STEAM_APPS = "C:\path\to\Steam\steamapps"
+mvn clean package "-DSteam.path=$env:STS_STEAM_APPS"
 ```
 
-如果 Steam 路径不同：
+如果已经配置了 `STS_STEAM_APPS`，也可以直接使用：
 
-```powershell
-mvn clean package -DSteam.path=D:/Steam/steamapps
+```text
+mvn clean package "-DSteam.path=C:/path/to/Steam/steamapps"
 ```
 
 构建产物为 `target/action-recorder.jar`。项目当前针对本机使用的 StS1 版本和 ModTheSpire 版本编译，换版本后应重新检查补丁方法签名。
@@ -215,4 +216,4 @@ TCP 接口只负责传输 ActionRecorder 的事件，不提供游戏控制命令
 
 ## 许可证
 
-本仓库目前尚未声明独立许可证。使用、再分发或发布修改版前，请确认 Slay the Spire、ModTheSpire、BaseMod 及本项目代码各自适用的许可和分发要求。
+本仓库代码采用 [MIT License](LICENSE)。该许可证只适用于本仓库代码，不改变 Slay the Spire、ModTheSpire、BaseMod 或其他第三方组件各自适用的许可和分发要求。

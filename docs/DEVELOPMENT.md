@@ -22,14 +22,15 @@ The repository focuses on the Java recorder Mod, its event protocol and its stat
 ## Build and install
 
 ```powershell
-$env:JAVA_HOME = "D:\UserPrograms\Java\corretto-1.8.0_462"
-& "D:\UserPrograms\maven\apache-maven-3.9.16\bin\mvn.cmd" clean package
+$env:JAVA_HOME = "C:\path\to\jdk8"
+$env:STS_STEAM_APPS = "C:\path\to\Steam\steamapps"
+mvn clean package "-DSteam.path=$env:STS_STEAM_APPS"
 ```
 
-The Maven build uses system-scoped jars from the Steam installation and copies the resulting jar into the game's `mods` directory. Override `Steam.path` when needed:
+The Maven build uses system-scoped jars from the Steam installation and copies the resulting jar into the game's `mods` directory. `Steam.path` must be supplied for each local environment:
 
 ```powershell
-mvn clean package -DSteam.path=D:/Steam/steamapps
+mvn clean package "-DSteam.path=C:/path/to/Steam/steamapps"
 ```
 
 There are currently no automated unit tests because the patches depend on the game runtime. Every change should at least pass `mvn clean package` and be exercised in a short game session.
