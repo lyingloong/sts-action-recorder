@@ -1,13 +1,17 @@
 package actionrecorder.runtime;
 
+import actionrecorder.ui.ActionToastOverlay;
+import actionrecorder.ui.AvailableActionsOverlay;
 import com.megacrit.cardcrawl.cards.AbstractCard;
 import com.megacrit.cardcrawl.cards.CardQueueItem;
 import com.megacrit.cardcrawl.dungeons.AbstractDungeon;
 import com.megacrit.cardcrawl.monsters.AbstractMonster;
 import com.megacrit.cardcrawl.rooms.AbstractRoom;
+import com.megacrit.cardcrawl.screens.CardRewardScreen;
 import com.megacrit.cardcrawl.screens.select.GridCardSelectScreen;
 import com.megacrit.cardcrawl.screens.select.HandCardSelectScreen;
-import com.megacrit.cardcrawl.actions.GameActionManager;
+import com.megacrit.cardcrawl.ui.buttons.CardSelectConfirmButton;
+import com.megacrit.cardcrawl.ui.buttons.GridSelectConfirmButton;
 import com.google.gson.JsonObject;
 
 import java.io.BufferedWriter;
@@ -28,14 +32,12 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
 /**
- * Game-side raw event recorder. Raw input is the primary data source; semantic
- * screen patches are optional annotations for downstream consumers.
+ * Game-side semantic decision recorder with optional raw-input diagnostics.
  */
 public final class ActionRecorderRuntime {
     private static final ActionRecorderRuntime INSTANCE = new ActionRecorderRuntime();
     private static final String MOD_VERSION = "0.1.0";
-    private static final String SCHEMA_VERSION = "0.1";
-    private static final long SETTLE_INTERVAL_MS = 120L;
+    private static final String SCHEMA_VERSION = "0.4";
 
     private final String host;
     private final int port;
@@ -46,7 +48,13 @@ public final class ActionRecorderRuntime {
     private final String recorderSession = UUID.randomUUID().toString();
     private final BlockingQueue<QueuedEvent> eventQueue = new LinkedBlockingQueue<QueuedEvent>();
     private final CommunicationStateBridge stateBridge = new CommunicationStateBridge();
-    private final Deque<JsonObject> beforeStack = new ArrayDeque<JsonObject>();
+    /**
+     * Transaction ids are emitted before the game mutates its state.  The
+     * external CommunicationMod bridge uses these ids to bind an accepted
+     * action to a state snapshot; it must never infer the before-state from a
+     * wall-clock timestamp alone.
+     */
+    private final Deque<String> transactionStack = new ArrayDeque<String>();
     private volatile boolean accepting = true;
     private final Thread writerThread;
 
@@ -55,11 +63,9 @@ public final class ActionRecorderRuntime {
     private final Map<String, BufferedWriter> fileWriters = new HashMap<String, BufferedWriter>();
     private long nextConnectAt;
     private long eventSeq;
-    private long stepSeq;
-    private String pendingStepId;
-    private String lastAfterCandidate;
-    private long nextSettleCheck;
     private boolean inRun;
+    private boolean terminalRun;
+    private String terminalReason;
     private int lastTurn = -1;
     private String lastRoom = "";
     private String lastGridSelectionSignature = "";
@@ -68,6 +74,12 @@ public final class ActionRecorderRuntime {
     private String savedFingerprint;
     private String activeRunId;
     private String activeFile;
+    private volatile ActionToastOverlay actionToast;
+    private volatile AvailableActionsOverlay availableActionsOverlay;
+    /** Last CommunicationMod state, used only by the optional in-game debug overlay. */
+    private JsonObject latestFrameSnapshot;
+    private String lastGridConfirmSignature = "";
+    private String lastHandConfirmSignature = "";
 
     private ActionRecorderRuntime() {
         host = property("host", "127.0.0.1");
@@ -94,6 +106,22 @@ public final class ActionRecorderRuntime {
 
     public static ActionRecorderRuntime getInstance() {
         return INSTANCE;
+    }
+
+    public void setActionToast(ActionToastOverlay actionToast) {
+        this.actionToast = actionToast;
+    }
+
+    public void setAvailableActionsOverlay(AvailableActionsOverlay overlay) {
+        this.availableActionsOverlay = overlay;
+        if (overlay != null) overlay.setSnapshot(latestFrameSnapshot);
+    }
+
+    /** Remember terminal screens before CardCrawlGame clears its dungeon reference. */
+    public synchronized void markRunTerminal(String reason) {
+        if (!inRun) return;
+        terminalRun = true;
+        terminalReason = reason;
     }
 
     public synchronized com.google.gson.JsonElement saveRunIdentity() {
@@ -127,80 +155,70 @@ public final class ActionRecorderRuntime {
         if (!captureMode.enabled()) {
             return;
         }
-        JsonObject before = beforeStack.isEmpty() ? stateBridge.snapshot() : beforeStack.pop();
-        if (pendingStepId != null) {
-            resolveStep(before, "next_decision");
+        if (transactionStack.isEmpty()) beginDecision();
+        recordActionFromSnapshot(id, kind, details);
+    }
+
+    /** Called at the accepted skip-button branch, before the reward screen closes. */
+    public synchronized void recordCardRewardSkip() {
+        if (!captureMode.enabled()) return;
+        recordActionFromSnapshot("SKIP", "card_reward_skipped", "");
+    }
+
+    /** Discovery potions/cards and Choose One cards select options without acquireCard(). */
+    public synchronized void recordCardRewardOption(CardRewardScreen screen, AbstractCard card, String mode) {
+        if (!captureMode.enabled() || screen == null || card == null
+                || screen.rewardGroup == null
+                || AbstractDungeon.screen != AbstractDungeon.CurrentScreen.CARD_REWARD) return;
+        int index = screen.rewardGroup.indexOf(card);
+        recordActionFromSnapshot(index < 0 ? "CHOOSE:card_id=" + card.cardID : "CHOOSE:index=" + index,
+                "card_option_selected",
+                "\"selection_mode\":" + quote(mode)
+                        + ",\"card_id\":" + quote(card.cardID)
+                        + ",\"card_name\":" + quote(card.name)
+                        + ",\"card_uuid\":" + quote(String.valueOf(card.uuid)));
+    }
+
+    private void recordActionFromSnapshot(String id, String kind, String details) {
+        if (transactionStack.isEmpty()) {
+            beginDecision();
         }
-        String stepId = (activeRunId == null ? recorderSession : activeRunId) + ":" + (++stepSeq);
+        String transactionId = transactionStack.pop();
         String selected = "{\"id\":" + quote(id)
                 + ",\"kind\":" + quote(kind)
                 + (details == null || details.length() == 0 ? "" : "," + details)
                 + "}";
-        String payload = "\"action\":" + selected
-                + ",\"chosen_action\":" + selected
-                + ",\"step_id\":" + quote(stepId)
-                + ",\"observation_before\":" + CommunicationStateBridge.observation(before)
-                + ",\"available_actions\":" + CommunicationStateBridge.availableActions(before);
-        emit("action_observed", payload);
-        pendingStepId = stepId;
-        lastAfterCandidate = null;
-        nextSettleCheck = System.currentTimeMillis() + SETTLE_INTERVAL_MS;
+        emit("action_accepted", "\"transaction_id\":" + quote(transactionId)
+                + ",\"action\":" + selected
+                + ",\"chosen_action\":" + selected);
+        ActionToastOverlay toast = actionToast;
+        if (toast != null) {
+            toast.show(id, kind);
+        }
+    }
+
+    public synchronized void recordPurchasedPotion(com.megacrit.cardcrawl.potions.AbstractPotion potion, int price) {
+        recordAction("SHOP:BUY_POTION:" + potion.ID, "shop_potion_purchased",
+                "\"potion_id\":" + quote(potion.ID)
+                        + ",\"potion_name\":" + quote(potion.name) + ",\"price\":" + price);
     }
 
     /** Call at the entry of a player action, before the game mutates its state. */
     public synchronized void beginDecision() {
         if (captureMode.enabled()) {
-            beforeStack.push(stateBridge.snapshotOrEmpty());
+            String transactionId = recorderSession + ":tx-" + UUID.randomUUID().toString();
+            transactionStack.push(transactionId);
+            emit("action_begin", "\"transaction_id\":" + quote(transactionId)
+                    + ",\"expected_screen\":" + quote(String.valueOf(AbstractDungeon.screen))
+                    + ",\"context\":" + contextJson());
         }
     }
 
     public synchronized void discardDecision() {
-        if (!beforeStack.isEmpty()) {
-            beforeStack.pop();
-        }
-    }
-
-    private void resolveStep(JsonObject after, String reason) {
-        if (pendingStepId == null) {
-            return;
-        }
-        emit("step_resolved", "\"step_id\":" + quote(pendingStepId)
-                + ",\"observation_after\":" + CommunicationStateBridge.observation(after)
-                + ",\"resolution\":" + quote(reason));
-        pendingStepId = null;
-        lastAfterCandidate = null;
-    }
-
-    private void settleStep() {
-        if (pendingStepId == null || System.currentTimeMillis() < nextSettleCheck) {
-            return;
-        }
-        GameActionManager manager = AbstractDungeon.actionManager;
-        AbstractRoom room = null;
-        try {
-            room = AbstractDungeon.getCurrRoom();
-        } catch (Throwable ignored) {
-            // Map and room globals can change between updates.
-        }
-        if (manager != null && (manager.currentAction != null || !manager.cardQueue.isEmpty()
-                || !manager.actions.isEmpty() || !manager.preTurnActions.isEmpty()
-                || !manager.monsterQueue.isEmpty()
-                || (room != null && room.phase == AbstractRoom.RoomPhase.COMBAT
-                && manager.phase != GameActionManager.Phase.WAITING_ON_USER))) {
-            nextSettleCheck = System.currentTimeMillis() + SETTLE_INTERVAL_MS;
-            return;
-        }
-        JsonObject after = stateBridge.snapshot();
-        if (after == null) {
-            resolveStep(null, "state_unavailable");
-            return;
-        }
-        String candidate = CommunicationStateBridge.observation(after);
-        if (candidate.equals(lastAfterCandidate)) {
-            resolveStep(after, "stable_state");
-        } else {
-            lastAfterCandidate = candidate;
-            nextSettleCheck = System.currentTimeMillis() + SETTLE_INTERVAL_MS;
+        if (!transactionStack.isEmpty()) {
+            String transactionId = transactionStack.pop();
+            emit("action_rejected", "\"transaction_id\":" + quote(transactionId)
+                    + ",\"reason\":\"game_rejected_or_cancelled\"");
         }
     }
 
@@ -240,6 +258,11 @@ public final class ActionRecorderRuntime {
         if (!captureMode.enabled()) {
             return;
         }
+        if (AbstractDungeon.screen == AbstractDungeon.CurrentScreen.DEATH) {
+            markRunTerminal("death");
+        } else if (AbstractDungeon.screen == AbstractDungeon.CurrentScreen.VICTORY) {
+            markRunTerminal("victory");
+        }
         boolean dungeon = false;
         try {
             dungeon = AbstractDungeon.isPlayerInDungeon();
@@ -248,12 +271,18 @@ public final class ActionRecorderRuntime {
         }
 
         if (!dungeon || AbstractDungeon.player == null) {
-            resolveStep(null, "run_left_before_stable_state");
             if (inRun) {
-                boolean terminal = AbstractDungeon.is_victory
-                        || AbstractDungeon.isDungeonBeaten
-                        || (AbstractDungeon.player != null && AbstractDungeon.player.currentHealth <= 0);
-                emit("run_ended", "\"reason\":\"dungeon_left\",\"terminal\":" + terminal);
+                boolean victory = AbstractDungeon.is_victory || AbstractDungeon.isDungeonBeaten;
+                boolean dead = AbstractDungeon.player != null
+                        && AbstractDungeon.player.currentHealth <= 0;
+                boolean terminal = terminalRun || victory || dead;
+                if (victory) {
+                    terminalReason = "victory";
+                } else if (dead) {
+                    terminalReason = "death";
+                }
+                String reason = terminalReason == null ? "dungeon_left" : terminalReason;
+                emit("run_ended", "\"reason\":" + quote(reason) + ",\"terminal\":" + terminal);
                 if (terminal) {
                     savedRunId = null;
                     savedFingerprint = null;
@@ -276,9 +305,26 @@ public final class ActionRecorderRuntime {
                     + ",\"seed\":" + quote(String.valueOf(com.megacrit.cardcrawl.core.Settings.seed)));
         }
 
+        if (AbstractDungeon.screen != AbstractDungeon.CurrentScreen.GRID) {
+            lastGridSelectionSignature = "";
+        }
+        if (AbstractDungeon.screen != AbstractDungeon.CurrentScreen.HAND_SELECT) {
+            lastHandSelectionSignature = "";
+            lastHandConfirmSignature = "";
+        }
+
         observeRoom();
         observeCombat();
-        settleStep();
+    }
+
+    /** Refresh the action-before cache when CommunicationMod publishes a state. */
+    public synchronized void cachePublishedFrameSnapshot() {
+        JsonObject snapshot = stateBridge.snapshot();
+        if (snapshot != null) {
+            latestFrameSnapshot = snapshot;
+            AvailableActionsOverlay overlay = availableActionsOverlay;
+            if (overlay != null) overlay.setSnapshot(snapshot);
+        }
     }
 
     private void observeRoom() {
@@ -347,6 +393,30 @@ public final class ActionRecorderRuntime {
     }
 
     /** Emits selection changes once, preserving multi-card interactions. */
+    public synchronized void recordGridCardSelection(Object list, Object candidate) {
+        GridCardSelectScreen screen = AbstractDungeon.gridSelectScreen;
+        if (!captureMode.enabled() || screen == null || list != screen.selectedCards
+                || !(candidate instanceof AbstractCard)
+                || AbstractDungeon.screen != AbstractDungeon.CurrentScreen.GRID) return;
+        AbstractCard card = (AbstractCard) candidate;
+        java.util.ArrayList<AbstractCard> selected = new java.util.ArrayList<AbstractCard>(screen.selectedCards);
+        selected.add(card);
+        StringBuilder signature = new StringBuilder();
+        for (AbstractCard item : selected) {
+            if (item != null) signature.append(item.uuid).append(';');
+        }
+        String value = signature.toString();
+        if (value.equals(lastGridSelectionSignature)) return;
+        recordActionFromSnapshot("SELECT_CARDS:grid:" + value, "card_selection_changed",
+                "\"screen\":\"grid\",\"selected_cards\":" + cardListJson(selected)
+                        + ",\"for_upgrade\":" + screen.forUpgrade
+                        + ",\"for_transform\":" + screen.forTransform
+                        + ",\"for_purge\":" + screen.forPurge
+                        + ",\"for_clarity\":" + screen.forClarity);
+        lastGridSelectionSignature = value;
+    }
+
+    /** Emits selection changes once, preserving multi-card interactions. */
     public synchronized boolean recordGridSelection(GridCardSelectScreen screen) {
         if (!captureMode.enabled() || screen == null || screen.selectedCards == null) {
             return false;
@@ -361,6 +431,9 @@ public final class ActionRecorderRuntime {
         if (value.equals(lastGridSelectionSignature)) {
             return false;
         }
+        if (AbstractDungeon.screen != AbstractDungeon.CurrentScreen.GRID) return false;
+        // An empty selection when a new grid opens is its initial state.
+        if (value.isEmpty() && lastGridSelectionSignature.isEmpty()) return false;
         lastGridSelectionSignature = value;
         recordAction("SELECT_CARDS:grid:" + value, "card_selection_changed",
                 "\"screen\":\"grid\",\"selected_cards\":" + cardListJson(screen.selectedCards)
@@ -385,10 +458,61 @@ public final class ActionRecorderRuntime {
         if (value.equals(lastHandSelectionSignature)) {
             return false;
         }
+        if (AbstractDungeon.screen != AbstractDungeon.CurrentScreen.HAND_SELECT) return false;
+        // Keep a real deselection, but not the empty baseline of a new screen.
+        if (value.isEmpty() && lastHandSelectionSignature.isEmpty()) return false;
         lastHandSelectionSignature = value;
         recordAction("SELECT_CARDS:hand:" + value, "card_selection_changed",
                 "\"screen\":\"hand\",\"selected_cards\":" + cardListJson(screen.selectedCards.group));
         return true;
+    }
+
+    /** Called immediately after the confirm button handles this frame, before the grid screen clears its click flag. */
+    public synchronized void recordGridConfirmation(GridSelectConfirmButton button) {
+        if (!captureMode.enabled() || button == null || button.hb == null
+                || !button.hb.clicked || button.isDisabled
+                || AbstractDungeon.gridSelectScreen == null
+                || AbstractDungeon.gridSelectScreen.selectedCards == null
+                || AbstractDungeon.gridSelectScreen.selectedCards.isEmpty()) {
+            lastGridConfirmSignature = "";
+            return;
+        }
+        GridCardSelectScreen screen = AbstractDungeon.gridSelectScreen;
+        StringBuilder signature = new StringBuilder();
+        for (AbstractCard card : screen.selectedCards) {
+            if (card != null) signature.append(card.uuid).append(';');
+        }
+        String selectedSignature = signature.toString();
+        if (selectedSignature.equals(lastGridConfirmSignature)) return;
+        lastGridConfirmSignature = selectedSignature;
+        recordAction("SELECT_CARDS:CONFIRM", "card_selection_confirmed",
+                "\"screen\":\"grid\",\"selected_cards\":" + cardListJson(screen.selectedCards)
+                        + ",\"for_upgrade\":" + screen.forUpgrade
+                        + ",\"for_transform\":" + screen.forTransform
+                        + ",\"for_purge\":" + screen.forPurge
+                        + ",\"for_clarity\":" + screen.forClarity);
+    }
+
+    /** Hand effects such as Armaments use a separate screen and confirm button from grid selection. */
+    public synchronized void recordHandConfirmation(CardSelectConfirmButton button) {
+        HandCardSelectScreen screen = AbstractDungeon.handCardSelectScreen;
+        if (!captureMode.enabled() || button == null || button.hb == null
+                || !button.hb.clicked || button.isDisabled || screen == null
+                || screen.selectedCards == null || screen.selectedCards.group == null
+                || screen.selectedCards.group.isEmpty()) {
+            lastHandConfirmSignature = "";
+            return;
+        }
+        StringBuilder signature = new StringBuilder();
+        for (AbstractCard card : screen.selectedCards.group) {
+            if (card != null) signature.append(card.uuid).append(';');
+        }
+        String selectedSignature = signature.toString();
+        if (selectedSignature.equals(lastHandConfirmSignature)) return;
+        lastHandConfirmSignature = selectedSignature;
+        recordAction("SELECT_CARDS:HAND_CONFIRM", "card_selection_confirmed",
+                "\"screen\":\"hand\",\"selected_cards\":"
+                        + cardListJson(screen.selectedCards.group));
     }
 
     public synchronized void recordPotionAction(String id, String kind, int slot,
@@ -444,15 +568,18 @@ public final class ActionRecorderRuntime {
 
     private void resetRunState() {
         inRun = false;
+        terminalRun = false;
+        terminalReason = null;
         lastTurn = -1;
         lastRoom = "";
         lastGridSelectionSignature = "";
         lastHandSelectionSignature = "";
         activeRunId = null;
         activeFile = null;
-        beforeStack.clear();
-        pendingStepId = null;
-        lastAfterCandidate = null;
+        latestFrameSnapshot = null;
+        lastGridConfirmSignature = "";
+        lastHandConfirmSignature = "";
+        transactionStack.clear();
     }
 
     private void startOrResumeRun() {

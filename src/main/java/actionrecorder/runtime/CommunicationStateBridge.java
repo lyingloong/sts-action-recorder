@@ -95,26 +95,4 @@ final class CommunicationStateBridge {
         }
     }
 
-    JsonObject snapshotOrEmpty() {
-        JsonObject value = snapshot();
-        return value == null ? new JsonObject() : value;
-    }
-
-    static String observation(JsonObject snapshot) {
-        return snapshot == null || !snapshot.has("game_state")
-                ? "null" : snapshot.get("game_state").toString();
-    }
-
-    static String availableActions(JsonObject snapshot) {
-        if (snapshot == null || !snapshot.has("game_state")) {
-            return "null";
-        }
-        JsonObject choices = new JsonObject();
-        choices.add("commands", snapshot.get("available_commands"));
-        JsonObject state = snapshot.getAsJsonObject("game_state");
-        if (state.has("choice_list")) {
-            choices.add("choices", state.get("choice_list"));
-        }
-        return choices.toString();
-    }
 }

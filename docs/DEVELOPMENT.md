@@ -5,8 +5,10 @@
 ```text
 src/main/java/actionrecorder/
   ActionRecorder.java                 Mod entry point and BaseMod subscription
+  ActionRecorderConfig.java           Persistent in-game Mod Settings options
+  ui/ActionToastOverlay.java          Non-blocking fading action notification
   runtime/ActionRecorderRuntime.java  Run identity, queue, JSONL and TCP output
-  runtime/CommunicationStateBridge.java Optional in-process CommunicationMod state snapshots
+  runtime/CommunicationStateBridge.java Optional UI/debug state cache
   patches/CommunicationStatePatches.java Optional postfix enrichment for CommunicationMod TCP state
   patches/DecisionPatches.java        Semantic game-action patches
   patches/RawInputPatches.java        Optional keyboard/mouse input patches
@@ -39,7 +41,7 @@ There are currently no automated unit tests because the patches depend on the ga
 
 1. Inspect the installed StS jar with `javap` and identify the method where the game accepts the decision.
 2. Add a small ModTheSpire patch in `DecisionPatches` or a dedicated patch class.
-3. For actions logged after the game mutates state, call `beginDecision()` in the patch prefix and `recordAction(...)` in the postfix; call `discardDecision()` when no action was accepted. Actions logged before the mutation can call `recordAction(...)` directly. The state converter runs on the game thread, so do not call it on every update frame.
+3. For actions logged after the game mutates state, call `beginDecision()` in the patch prefix and `recordAction(...)` in the postfix; call `discardDecision()` when no action was accepted. Actions logged before the mutation can call `recordAction(...)` directly. `beginDecision()` emits a transaction marker before mutation; the CommunicationMod bridge, not Java, owns the canonical observation join.
 4. Put entity IDs, indices and targets in structured JSON fields. Do not encode information only in localized display text.
 5. Avoid disk and socket I/O in patches. The runtime queues events and performs I/O on its writer thread.
 6. Update `docs/EVENT_SCHEMA.md` and the action table in `README.md`.
@@ -47,7 +49,32 @@ There are currently no automated unit tests because the patches depend on the ga
 
 Prefer semantic boundaries over low-level input hooks. In this StS build, human card play inserts directly into `cardQueue` from `AbstractPlayer.playCard()`; patching `GameActionManager.addCardQueueItem()` instead misses humans and risks recording automated plays. End-turn input goes through `EndTurnButton.disable(true)`, not `GameActionManager.endTurn()`. Generic `closeCurrentScreen()` also fires during automatic transitions: record cancel/leave at the actual cancel button instead. A semantic patch should not fire for hover, rendering, or an unaccepted click.
 
+The optional action toast is deliberately outside the patch classes. `ActionRecorderRuntime.recordAction` only forwards the accepted action to `ActionToastOverlay`; the overlay renders from `PostRenderSubscriber` and keeps all timing state in memory. Never perform file or socket I/O from the overlay, and keep it safe when the game is running with no external consumer.
+
+The recommended state path is external: CommunicationMod starts
+`sts_agent.recording.communication_bridge`, which receives its stable JSON state
+stream and keeps a bounded `state_seq` cache. ActionRecorder emits
+`action_begin` before mutation and `action_accepted` after the game accepts the
+choice. The bridge matches an immutable before-state using screen context,
+legal-action checks and temporal bounds. If it cannot prove a unique match it
+records `unmatched`/`ambiguous` diagnostics and does not create a training row.
+The in-process snapshot is not used as a training observation; the bridge owns
+state matching and emits the canonical trajectory.
+
 ## Run identity and files
+
+Smithing and shop purge are fine-grained user actions: record the accepted
+campfire/shop option, then selection changes and explicit confirmation or
+return as ordinary actions. The grid-confirm patch instruments the call site
+in `GridCardSelectScreen.update()` so it observes the click immediately after
+`GridSelectConfirmButton.update()` and before the screen consumes the click
+flag. Do not patch every `AbstractCard.upgrade()` globally: preview cards and
+other upgrade effects are not campfire decisions.
+
+The potion purchase patch wraps the `obtainPotion` call inside
+`StorePotion.purchasePotion` and records only when the game returns true. Potion
+lists include `PotionSlot` placeholders, so their length cannot determine whether
+an inventory is full. Capture the purchased potion before Courier restocking.
 
 The runtime stores a small BaseMod save field containing the run ID and fingerprint. The fingerprint includes character, ascension and seed. On reopening the same save, the recorder restores the identity and appends to the same JSONL file. A changed fingerprint starts a new run file.
 

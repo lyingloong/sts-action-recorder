@@ -12,17 +12,17 @@
 observation_before + available_actions + action
 ```
 
-动作后的状态通过相同 `step_id` 的 `step_resolved` 事件关联：
+动作后的状态由 bridge 在事务完成后关联：
 
 ```text
-action_observed + step_resolved(observation_after)
+action transaction + observation_after
 ```
 
 动作前状态是训练和离线分析的主样本。动作后状态主要用于验证动作是否生效、判断界面是否稳定和构建状态转移。
 
 ## 2. Canonical State
 
-`action_observed.observation_before` 和 `step_resolved.observation_after` 都是一个状态对象，而不是另一个事件 envelope。
+规范化轨迹中的 `pre_state` 和 `post_state` 都是状态对象，而不是另一个事件 envelope。
 
 ```json
 {
@@ -124,11 +124,10 @@ ActionRecorder 只保存游戏运行时的原始状态和稳定实体字段，�
 
 ## 3. Action snapshot contract
 
-每个 `action_observed` 必须包含动作前状态、动作能力线索和已经被游戏接受的语义动作：
+每个 bridge 生成的规范化轨迹步骤必须包含动作前状态、动作能力线索和已经被游戏接受的语义动作：
 
 ```json
 {
-  "type":"action_observed",
   "step_id":"run-id:12",
   "observation_before":{"state_schema_version":"0.1"},
   "available_actions":{"commands":["play","end","potion"],"choices":[]},
@@ -136,14 +135,20 @@ ActionRecorder 只保存游戏运行时的原始状态和稳定实体字段，�
 }
 ```
 
-`observation_before` 是训练样本的唯一推荐状态来源。消费者不得用时间戳去另一个 TCP 状态流中猜测匹配状态。`available_actions` 完全遵循 CommunicationMod 的原始命令和选项语义，当前不保证已经展开到每张卡牌和每个目标；需要完整合法动作集合时，由下游消费者派生，不能改变 `available_actions` 的语义。
+`observation_before` 是训练样本的唯一推荐状态来源。schema 0.4 中它由
+CommunicationMod bridge 依据 `transaction_id`、稳定状态序号、屏幕上下文和
+合法动作校验生成；消费者不得再用时间戳去另一个 TCP 状态流自行猜测。旧版
+schema 0.3 的本地快照只作为历史文档，不进入当前采集链路。`available_actions` 完全遵循
+CommunicationMod 的原始命令和选项语义，当前不保证已经展开到每张卡牌和每个
+目标；需要完整合法动作集合时，由下游消费者派生，不能改变
+`available_actions` 的语义。
 
 `action` 的参数必须使用结构化字段，不能只编码在本地化显示文本中。`chosen_action` 如果存在只是兼容别名，新消费者应优先读取 `action`。
 
 ## 4. Lifecycle and validity
 
-- `action_observed` 是动作前快照；
-- `step_resolved` 用相同 `step_id` 提供动作后状态；
+- `action_begin`/`action_accepted`/`action_rejected` 是原始事务标记；
+- bridge 用相同 `transaction_id` 提供动作前后的状态；
 - `resolution=stable_state` 表示动作队列清空并观察到稳定状态；
 - `resolution=next_decision` 表示下一次决策先发生；
 - 任一状态为 `null` 表示状态源不可用，不是空游戏状态；

@@ -1,5 +1,6 @@
 package actionrecorder.patches;
 
+import actionrecorder.runtime.ActionRecorderRuntime;
 import com.evacipated.cardcrawl.modthespire.lib.SpirePatch;
 import com.evacipated.cardcrawl.modthespire.lib.SpirePostfixPatch;
 import com.google.gson.JsonElement;
@@ -31,6 +32,23 @@ public final class CommunicationStatePatches {
         @SpirePostfixPatch
         public static String postfix(String __result) {
             return addKeys(__result);
+        }
+    }
+
+    /**
+     * CommunicationMod only publishes a new external state after its own
+     * change detector says the game state changed. Reuse that boundary for the
+     * recorder cache instead of serializing the complete state every update.
+     */
+    @SpirePatch(
+            cls = "communicationmod.CommunicationMod",
+            method = "publishOnGameStateChange",
+            requiredModId = "CommunicationMod",
+            optional = true)
+    public static class CachePublishedState {
+        @SpirePostfixPatch
+        public static void postfix() {
+            ActionRecorderRuntime.getInstance().cachePublishedFrameSnapshot();
         }
     }
 
