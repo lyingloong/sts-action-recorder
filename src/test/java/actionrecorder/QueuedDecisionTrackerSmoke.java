@@ -14,8 +14,16 @@ public final class QueuedDecisionTrackerSmoke {
         check(tracker.removeMissing(Arrays.asList(first, second)).isEmpty(), "identity retention");
         check("first".equals(tracker.begin(first).transactionId), "first exact queue item");
         tracker.active().dispatched = true;
+        check(!tracker.readyToSettleBefore(first, false), "original queue entry still pending");
+        Object automaticCopy = new Object();
+        check(!tracker.readyToSettleBefore(automaticCopy, false), "automatic replay is part of the active decision");
+        check(!tracker.readyToSettleBefore(new Object(), false), "recursive automatic replay also delays settlement");
+        check(!tracker.readyToSettleBefore(second, true), "end turn waits for next turn");
+        check(tracker.readyToSettleBefore(second, false), "next human execution follows the completed auto chain");
+        check(tracker.readyToSettleBefore(null, false), "idle queue is a settlement boundary");
         check(tracker.finishActive().dispatched, "dispatch survives queue removal");
         check("second".equals(tracker.begin(second).transactionId), "equal label is not same item");
+        check(!tracker.readyToSettleBefore(null, false), "unexecuted action is not settled");
         check(!tracker.finishActive().dispatched, "validation failure is not executed");
         Object endTurn = new Object();
         tracker.register(endTurn, "end", 1);

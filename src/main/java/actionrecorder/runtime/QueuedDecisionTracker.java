@@ -29,6 +29,11 @@ public final class QueuedDecisionTracker<T> {
     public boolean hasPending(T item) { return pending.containsKey(item); }
     public boolean hasPending() { return !pending.isEmpty(); }
     public Entry<T> active() { return active; }
+    /** Drain engine queue continuations before the next tracked human entry or idle. */
+    public boolean readyToSettleBefore(T nextItem, boolean waitingForNextTurn) {
+        return active != null && active.dispatched && !waitingForNextTurn
+                && nextItem != active.item && (nextItem == null || hasPending(nextItem));
+    }
     public Entry<T> begin(T item) {
         if (active != null) throw new IllegalStateException("Previous execution not closed");
         active = pending.remove(item);

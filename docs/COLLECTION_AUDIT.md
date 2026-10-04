@@ -58,6 +58,16 @@ python tools/audit_trace.py "C:/path/to/game/data/actionrecorder/run-example.jso
 5. 取消、返回、拒绝和缺失状态保留为原始记录，下游自行决定如何使用。
 6. 非地图状态的 map 为 null；三色钥匙和本幕 Boss 信息应符合实际游戏。
 7. 只有真实终局标记整局胜负；跨幕和保存退出保持对局身份。
+8. Mod 0.1.2 起，卡牌保留/临时免费/费用修改标记符合游戏对象；非零费用的临时免费牌
+   不应被改写成零费用，free_to_play_once 单独记录。
+9. 观者切换 Neutral/Calm/Wrath/Divinity 时检查 player.stance；能量/抽牌基数和本回合
+   已出牌数按游戏计数记录，快速提交但尚未执行的牌不提前计入。
+10. 翻牌前未揭示的 card 为 null；首次翻牌后出现牌面，盖回后保留已知牌面；配对移除后
+    保留固定位置并标记 matched；remaining_attempts 与结算时机一致，新事件无旧棋盘记忆。
+11. Mod 0.1.3 起，Neutral 的 name=null、未揭示 card=null 等字段在最终 JSON 中存在；
+    锻造/删牌预览确认动作的 selected_cards 包含当前目标牌，且与前状态 confirmation_card 一致。
+12. 双重打击等自动重放不记作玩家出牌；原攻击的 after_state 应在自动重放结束后。
+    单次选牌/确认不再因为鼠标按下阶段多出 game_rejected_or_cancelled 事务。
 
 字段细节见 [事件格式](EVENT_SCHEMA.md) 和 [状态契约](STATE_SCHEMA.md)。
 

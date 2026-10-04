@@ -24,7 +24,7 @@ python tools/extract_dataset.py --input "C:/path/to/SlayTheSpire/data/actionreco
 | `--ascension-range 0 20` | 闭区间；可与指定集合合并 |
 | `--outcome victory death incomplete unknown` | 允许的结果集合，不传则全部 |
 | `--victory-type normal heart unknown` | 仅提取相应胜利类型，不传则不限制 |
-| `--mod-version 0.1.1` | 一局内所有已知 Mod 版本均须在给定集合内 |
+| `--mod-version 0.1.3` | 一局内所有已知 Mod 版本均须在给定集合内 |
 | `--require-complete-states` | 排除状态关联有质量标记、排队动作缺执行前状态的整局；不要求后状态 |
 
 终局仅采用 `terminal=true` 的 `run_finished/run_ended`，不以普通 Boss 房间判胜。

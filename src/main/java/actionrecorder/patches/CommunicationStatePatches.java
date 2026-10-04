@@ -1,19 +1,24 @@
 package actionrecorder.patches;
 
 import actionrecorder.runtime.ActionRecorderRuntime;
+import actionrecorder.runtime.RuntimeStateFields;
+import actionrecorder.runtime.MatchGameState;
 import com.evacipated.cardcrawl.modthespire.lib.SpirePatch;
 import com.evacipated.cardcrawl.modthespire.lib.SpirePostfixPatch;
 import com.evacipated.cardcrawl.modthespire.lib.SpireInstrumentPatch;
 import javassist.CannotCompileException;
 import javassist.expr.ExprEditor;
 import javassist.expr.MethodCall;
+import javassist.expr.NewExpr;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.HashMap;
 import com.megacrit.cardcrawl.cards.AbstractCard;
+import com.megacrit.cardcrawl.characters.AbstractPlayer;
 
 /**
  * Adds fields that the optional CommunicationMod converter does not expose.
@@ -25,6 +30,7 @@ public final class CommunicationStatePatches {
     private static Field rubyKeyField;
     private static Field emeraldKeyField;
     private static Field sapphireKeyField;
+    private static Method cardConverter;
 
     private CommunicationStatePatches() {
     }
@@ -38,6 +44,21 @@ public final class CommunicationStatePatches {
         @SpirePostfixPatch
         public static String postfix(String __result) {
             return addKeys(__result);
+        }
+    }
+
+    /** Preserve nulls at the source serializer, including nested maps/board cards. */
+    @SpirePatch(cls = "communicationmod.GameStateConverter", method = "getCommunicationState",
+            requiredModId = "CommunicationMod", optional = true)
+    public static class PreserveNullValues {
+        @SpireInstrumentPatch public static ExprEditor instrument() {
+            return new ExprEditor() {
+                @Override public void edit(NewExpr expression) throws CannotCompileException {
+                    if ("com.autoplay.gson.Gson".equals(expression.getClassName())) {
+                        expression.replace("{ $_ = new com.autoplay.gson.GsonBuilder().serializeNulls().create(); }");
+                    }
+                }
+            };
         }
     }
 
@@ -59,8 +80,43 @@ public final class CommunicationStatePatches {
             __result.put("target", card.target.name());
             __result.put("raw_description", card.rawDescription);
             __result.put("color", card.color.name());
+            RuntimeStateFields.addCardFlags(__result, card);
             return __result;
         }
+    }
+
+    @SpirePatch(cls = "communicationmod.GameStateConverter", method = "convertPlayerToJson",
+            paramtypez = {AbstractPlayer.class}, requiredModId = "CommunicationMod", optional = true)
+    public static class PlayerRuntimeFields {
+        @SpirePostfixPatch public static HashMap<String, Object> postfix(
+                HashMap<String, Object> __result, AbstractPlayer player) {
+            if (__result != null) RuntimeStateFields.addPlayerFields(__result, player);
+            return __result;
+        }
+    }
+
+    @SpirePatch(cls = "communicationmod.GameStateConverter", method = "getEventState",
+            requiredModId = "CommunicationMod", optional = true)
+    public static class MatchGamePublicState {
+        @SpirePostfixPatch public static HashMap<String, Object> postfix(HashMap<String, Object> __result) {
+            if (__result == null || com.megacrit.cardcrawl.dungeons.AbstractDungeon.getCurrRoom() == null) return __result;
+            Object event = com.megacrit.cardcrawl.dungeons.AbstractDungeon.getCurrRoom().event;
+            if (event instanceof com.megacrit.cardcrawl.events.shrines.GremlinMatchGame) {
+                __result.put("match_game", MatchGameState.snapshot(event, CommunicationStatePatches::convertPublicCard));
+            }
+            return __result;
+        }
+    }
+
+    private static Object convertPublicCard(Object card) {
+        try {
+            if (cardConverter == null) {
+                cardConverter = Class.forName("communicationmod.GameStateConverter")
+                        .getDeclaredMethod("convertCardToJson", AbstractCard.class);
+                cardConverter.setAccessible(true);
+            }
+            return cardConverter.invoke(null, card);
+        } catch (ReflectiveOperationException | RuntimeException ignored) { return null; }
     }
 
     @SpirePatch(cls = "communicationmod.GameStateConverter", method = "getHandSelectState",

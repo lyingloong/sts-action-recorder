@@ -6,6 +6,100 @@ import json
 from collections import Counter
 from pathlib import Path
 
+CARD_FLAGS = ("retain", "self_retain", "free_to_play_once", "is_cost_modified",
+              "is_cost_modified_for_turn", "is_innate", "purge_on_use", "exhaust_on_use_once",
+              "in_bottle_flame", "in_bottle_lightning", "in_bottle_tornado")
+PLAYER_COUNTERS = ("base_energy_per_turn", "energy_per_turn", "master_hand_size",
+                   "game_hand_size", "cards_played_this_turn")
+
+
+def _mod_at_least(version, minimum) -> bool:
+    try:
+        return tuple(int(part) for part in str(version).split("-", 1)[0].split(".")) >= minimum
+    except ValueError:
+        return False
+
+
+def _audit_runtime_fields(state: dict, label: str, errors: list, warnings: list) -> None:
+    """Check the additive 0.1.2 fields; old journals remain auditable."""
+    def fields(value, names, value_type, location):
+        for name in names:
+            if name not in value:
+                warnings.append(f"{label}: {location} missing {name}")
+            elif value[name] is not None and type(value[name]) is not value_type:
+                errors.append(f"{label}: {location}.{name} has invalid type")
+
+    def card(value, location):
+        if isinstance(value, dict):
+            fields(value, CARD_FLAGS, bool, location)
+
+    def cards(container, names, location):
+        for name in names:
+            values = container.get(name)
+            if isinstance(values, list):
+                for index, value in enumerate(values):
+                    card(value, f"{location}.{name}[{index}]")
+
+    cards(state, ("deck",), "game_state")
+    combat = state.get("combat_state")
+    if isinstance(combat, dict):
+        cards(combat, ("hand", "draw_pile", "discard_pile", "exhaust_pile", "limbo"), "combat_state")
+        card(combat.get("card_in_play"), "combat_state.card_in_play")
+        player = combat.get("player")
+        if isinstance(player, dict):
+            fields(player, PLAYER_COUNTERS, int, "combat_state.player")
+            if "stance" not in player:
+                warnings.append(f"{label}: combat_state.player missing stance")
+            elif player["stance"] is not None:
+                stance = player["stance"]
+                if not isinstance(stance, dict):
+                    errors.append(f"{label}: player.stance must be an object or null")
+                else:
+                    fields(stance, ("id", "name", "description"), str, "player.stance")
+    screen = state.get("screen_state")
+    if not isinstance(screen, dict):
+        return
+    cards(screen, ("cards", "hand", "selected", "selected_cards"), "screen_state")
+    if screen.get("event_id") != "Match and Keep!" and "match_game" not in screen:
+        return
+    match = screen.get("match_game")
+    if not isinstance(match, dict):
+        warnings.append(f"{label}: Match and Keep event missing match_game")
+        return
+    fields(match, ("remaining_attempts", "matched_pairs"), int, "match_game")
+    fields(match, ("game_done", "awaiting_resolution"), bool, "match_game")
+    fields(match, ("phase",), str, "match_game")
+    for name in ("board", "selected_positions"):
+        if name not in match:
+            warnings.append(f"{label}: match_game missing {name}")
+        elif match[name] is not None and not isinstance(match[name], list):
+            errors.append(f"{label}: match_game.{name} must be an array or null")
+    board = match.get("board")
+    if not isinstance(board, list):
+        return
+    positions = set()
+    for index, item in enumerate(board):
+        location = f"match_game.board[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{label}: {location} must be an object")
+            continue
+        fields(item, ("position", "row", "column"), int, location)
+        fields(item, ("face_up", "revealed", "matched"), bool, location)
+        fields(item, ("uuid",), str, location)
+        if "card" not in item:
+            warnings.append(f"{label}: {location} missing card")
+        elif item.get("revealed") is not True and item["card"] is not None:
+            errors.append(f"{label}: {location} exposes an unrevealed card")
+        else:
+            card(item["card"], location + ".card")
+        position = item.get("position")
+        if type(position) is int:
+            if position not in range(12) or position in positions:
+                errors.append(f"{label}: {location} invalid/duplicate board position")
+            positions.add(position)
+            if item.get("row") != position // 4 or item.get("column") != position % 4:
+                errors.append(f"{label}: {location} inconsistent board coordinates")
+
 
 def audit(path: Path) -> dict:
     states, begins, accepted, rejected = {}, {}, {}, set()
@@ -57,6 +151,8 @@ def audit(path: Path) -> dict:
                     for required in ("class", "act", "floor", "current_hp", "max_hp", "gold", "deck", "relics", "potions", "keys", "act_boss"):
                         if required not in state:
                             warnings.append(f"line {line_number}: state missing {required}")
+                    if _mod_at_least(event.get("mod_version"), (0, 1, 2)):
+                        _audit_runtime_fields(state, f"line {line_number}", errors, warnings)
                     if state.get("room_phase") == "COMBAT" and state.get("screen_type") == "NONE":
                         combat = state.get("combat_state")
                         if not isinstance(combat, dict) or any(field not in combat for field in ("hand", "player", "monsters")):
@@ -82,6 +178,26 @@ def audit(path: Path) -> dict:
                     errors.append(f"line {line_number}: missing action ID/kind")
                 if action.get("autoplay"):
                     errors.append(f"line {line_number}: automated card play included")
+                if (_mod_at_least(event.get("mod_version"), (0, 1, 3))
+                        and action.get("kind") == "card_selection_confirmed"):
+                    begin = begins.get(tx) or {}
+                    state = (states.get(begin.get("before_state_id")) or {}).get("game_state") or {}
+                    screen = state.get("screen_state") or {}
+                    targets = action.get("selected_cards")
+                    if targets is None:
+                        warnings.append(f"line {line_number}: confirmation targets unavailable")
+                    elif not isinstance(targets, list):
+                        errors.append(f"line {line_number}: confirmation targets must be an array or null")
+                    else:
+                        expected = screen.get("selected" if action.get("screen") == "hand" else "selected_cards")
+                        if action.get("screen") == "grid" and screen.get("confirm_screen_up") is True:
+                            preview = screen.get("confirmation_card")
+                            expected = [preview] if isinstance(preview, dict) else None
+                        if isinstance(expected, list):
+                            expected_ids = [c.get("uuid") for c in expected if isinstance(c, dict)]
+                            target_ids = [c.get("card_uuid") for c in targets if isinstance(c, dict)]
+                            if len(target_ids) != len(targets) or sorted(expected_ids, key=str) != sorted(target_ids, key=str):
+                                errors.append(f"line {line_number}: confirmation target mismatch with pre-state")
                 accepted[tx] = event
                 kinds[str(action.get("kind"))] += 1
             elif kind == "action_rejected":

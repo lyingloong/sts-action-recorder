@@ -603,7 +603,9 @@ public final class DecisionPatches {
         private static int depth;
         @SpirePrefixPatch
         public static void prefix() {
-            attempted = InputHelper.justClickedLeft || InputHelper.justReleasedClickLeft
+            // Press only arms the hitbox; mouse release is the semantic commit.
+            // Keep controller press because that path accepts immediately.
+            attempted = InputHelper.justReleasedClickLeft
                     || com.megacrit.cardcrawl.helpers.controller.CInputActionSet.select.isJustPressed();
             depth = ActionRecorderRuntime.getInstance().decisionDepth();
             if (attempted) begin();
@@ -676,20 +678,40 @@ public final class DecisionPatches {
         }
     }
 
-    /** Record the accepted face-down -> face-up branch, not hover/cleanup. */
+    /** Preserve the original shuffled layout, not later remaining-list indices. */
+    @SpirePatch(clz = com.megacrit.cardcrawl.events.shrines.GremlinMatchGame.class, method = "placeCards")
+    public static class MatchGameBoardPlaced {
+        @SpirePostfixPatch public static void postfix(com.megacrit.cardcrawl.events.shrines.GremlinMatchGame __instance) {
+            actionrecorder.runtime.MatchGameState.initialize(__instance);
+        }
+    }
+
     @SpirePatch(clz = com.megacrit.cardcrawl.events.shrines.GremlinMatchGame.class,
             method = "updateMatchGameLogic")
     public static class MatchGameCardFlip {
         @SpireInstrumentPatch public static ExprEditor instrument() {
             return new ExprEditor() {
                 @Override public void edit(FieldAccess access) throws CannotCompileException {
-                    if (access.isWriter() && "isFlipped".equals(access.getFieldName())) {
-                        access.replace("{ if (!$1 && $0.isFlipped)"
-                                + " actionrecorder.patches.DecisionPatches.recordMatchCard(this, $0);"
+                    if (access.isWriter() && "justClickedLeft".equals(access.getFieldName())
+                            && "com.megacrit.cardcrawl.helpers.input.InputHelper".equals(access.getClassName())) {
+                        // This accepted input branch precedes CM's CardIdentificationPatch,
+                        // which reveals the ID before the isFlipped assignment itself.
+                        access.replace("{ if (!$1) actionrecorder.patches.DecisionPatches.recordMatchGameInput(this);"
                                 + " $proceed($$); }");
+                    } else if (access.isWriter() && "isFlipped".equals(access.getFieldName())) {
+                        access.replace("{ boolean revealing = !$1 && $0.isFlipped;"
+                                + " $proceed($$); if (revealing)"
+                                + " actionrecorder.runtime.MatchGameState.revealed(this, $0); }");
                     }
                 }
             };
+        }
+    }
+
+    public static void recordMatchGameInput(Object event) {
+        Object hovered = field(event, "hoveredCard");
+        if (hovered instanceof AbstractCard && ((AbstractCard) hovered).isFlipped) {
+            recordMatchCard(event, (AbstractCard) hovered);
         }
     }
 
@@ -711,6 +733,7 @@ public final class DecisionPatches {
         } catch (ReflectiveOperationException ignored) { }
         ActionRecorderRuntime.getInstance().recordAction(actionId, "event_card_flipped",
                 "\"option_index\":" + index + ",\"card_uuid\":" + quote(String.valueOf(card.uuid))
+                        + ",\"board_position\":" + actionrecorder.runtime.MatchGameState.position(event, card)
                         + ",\"event_class\":" + quote(event.getClass().getName()));
     }
 

@@ -39,7 +39,7 @@ import java.util.concurrent.TimeUnit;
  */
 public final class ActionRecorderRuntime {
     private static final ActionRecorderRuntime INSTANCE = new ActionRecorderRuntime();
-    private static final String MOD_VERSION = "0.1.1";
+    private static final String MOD_VERSION = "0.1.3";
     private static final String SCHEMA_VERSION = "0.5";
 
     private final String host;
@@ -481,8 +481,13 @@ public final class ActionRecorderRuntime {
         QueuedDecisionTracker.Entry<Object> active = queuedDecisions.active();
         if (active != null && active.dispatched) {
             // End-turn includes the enemy turn and next turn's draw/energy.
-            if (active.item == endTurnToken
-                    && com.megacrit.cardcrawl.actions.GameActionManager.turn <= active.turn) return;
+            boolean waitingForNextTurn = active.item == endTurnToken
+                    && com.megacrit.cardcrawl.actions.GameActionManager.turn <= active.turn;
+            CardQueueItem next = manager.cardQueue.isEmpty() ? null : manager.cardQueue.get(0);
+            Object nextKey = next == null ? null : next.card == null ? endTurnToken : next;
+            // Double Tap/Havoc/etc. create untracked engine entries. Their effects
+            // belong to the previous decision, not a new human action or an early after-state.
+            if (!queuedDecisions.readyToSettleBefore(nextKey, waitingForNextTurn)) return;
             settleActiveExecution();
         }
         if (queuedDecisions.active() != null || manager.cardQueue.isEmpty()) return;
@@ -708,8 +713,9 @@ public final class ActionRecorderRuntime {
             return;
         }
         GridCardSelectScreen screen = AbstractDungeon.gridSelectScreen;
+        List<AbstractCard> selected = RuntimeStateFields.gridConfirmationCards(screen);
         recordAction("SELECT_CARDS:CONFIRM", "card_selection_confirmed",
-                "\"screen\":\"grid\",\"selected_cards\":" + cardListJson(screen.selectedCards)
+                "\"screen\":\"grid\",\"selected_cards\":" + (selected == null ? "null" : cardListJson(selected))
                         + ",\"for_upgrade\":" + screen.forUpgrade
                         + ",\"for_transform\":" + screen.forTransform
                         + ",\"for_purge\":" + screen.forPurge

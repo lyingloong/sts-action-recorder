@@ -24,17 +24,113 @@
       "properties": {"ruby": {"type": ["boolean", "null"]}, "emerald": {"type": ["boolean", "null"]}, "sapphire": {"type": ["boolean", "null"]}},
       "additionalProperties": true
     },
-    "deck": {"type": ["array", "null"], "items": {"type": "object"}},
+    "deck": {"type": ["array", "null"], "items": {"$ref": "#/$defs/card"}},
     "relics": {"type": ["array", "null"], "items": {"type": "object"}},
     "potions": {"type": ["array", "null"], "items": {"type": "object"}},
     "map": {"type": ["array", "object", "null"]},
-    "screen_state": {"type": ["object", "null"]},
+    "screen_state": {
+      "type": ["object", "null"],
+      "properties": {
+        "cards": {"$ref": "#/$defs/cards"},
+        "hand": {"$ref": "#/$defs/cards"},
+        "selected": {"$ref": "#/$defs/cards"},
+        "selected_cards": {"$ref": "#/$defs/cards"},
+        "match_game": {"$ref": "#/$defs/match_game"}
+      },
+      "additionalProperties": true
+    },
     "choice_list": {"type": ["array", "null"]},
-    "combat_state": {"type": ["object", "null"]},
+    "combat_state": {
+      "type": ["object", "null"],
+      "properties": {
+        "player": {"$ref": "#/$defs/player"},
+        "hand": {"$ref": "#/$defs/cards"},
+        "draw_pile": {"$ref": "#/$defs/cards"},
+        "discard_pile": {"$ref": "#/$defs/cards"},
+        "exhaust_pile": {"$ref": "#/$defs/cards"},
+        "limbo": {"$ref": "#/$defs/cards"},
+        "card_in_play": {"anyOf": [{"$ref": "#/$defs/card"}, {"type": "null"}]}
+      },
+      "additionalProperties": true
+    },
     "seed": false
   },
   "allOf": [
     {"if": {"properties": {"screen_type": {"not": {"const": "MAP"}}}}, "then": {"properties": {"map": {"type": "null"}}}}
   ],
+  "$defs": {
+    "cards": {"type": ["array", "null"], "items": {"$ref": "#/$defs/card"}},
+    "card": {
+      "type": "object",
+      "description": "Mod 0.1.2 fields are optional here for older protocol-0.5 journals; audit_trace checks their presence by mod_version.",
+      "properties": {
+        "retain": {"type": ["boolean", "null"]},
+        "self_retain": {"type": ["boolean", "null"]},
+        "free_to_play_once": {"type": ["boolean", "null"]},
+        "is_cost_modified": {"type": ["boolean", "null"]},
+        "is_cost_modified_for_turn": {"type": ["boolean", "null"]},
+        "is_innate": {"type": ["boolean", "null"]},
+        "purge_on_use": {"type": ["boolean", "null"]},
+        "exhaust_on_use_once": {"type": ["boolean", "null"]},
+        "in_bottle_flame": {"type": ["boolean", "null"]},
+        "in_bottle_lightning": {"type": ["boolean", "null"]},
+        "in_bottle_tornado": {"type": ["boolean", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "player": {
+      "type": ["object", "null"],
+      "properties": {
+        "base_energy_per_turn": {"type": ["integer", "null"]},
+        "energy_per_turn": {"type": ["integer", "null"]},
+        "master_hand_size": {"type": ["integer", "null"]},
+        "game_hand_size": {"type": ["integer", "null"]},
+        "cards_played_this_turn": {"type": ["integer", "null"]},
+        "stance": {
+          "type": ["object", "null"],
+          "required": ["id", "name", "description"],
+          "properties": {
+            "id": {"type": ["string", "null"]},
+            "name": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]}
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "match_game": {
+      "type": ["object", "null"],
+      "required": ["phase", "remaining_attempts", "matched_pairs", "game_done", "awaiting_resolution", "board", "selected_positions"],
+      "properties": {
+        "phase": {"type": ["string", "null"]},
+        "remaining_attempts": {"type": ["integer", "null"]},
+        "matched_pairs": {"type": ["integer", "null"]},
+        "game_done": {"type": ["boolean", "null"]},
+        "awaiting_resolution": {"type": ["boolean", "null"]},
+        "selected_positions": {"type": ["array", "null"], "items": {"type": ["integer", "null"], "minimum": 0, "maximum": 11}},
+        "board": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "required": ["position", "row", "column", "uuid", "face_up", "revealed", "matched", "card"],
+            "properties": {
+              "position": {"type": ["integer", "null"], "minimum": 0, "maximum": 11},
+              "row": {"type": ["integer", "null"], "minimum": 0, "maximum": 2},
+              "column": {"type": ["integer", "null"], "minimum": 0, "maximum": 3},
+              "uuid": {"type": ["string", "null"]},
+              "face_up": {"type": ["boolean", "null"]},
+              "revealed": {"type": ["boolean", "null"]},
+              "matched": {"type": ["boolean", "null"]},
+              "card": {"anyOf": [{"$ref": "#/$defs/card"}, {"type": "null"}]}
+            },
+            "allOf": [{"if": {"properties": {"revealed": {"not": {"const": true}}}}, "then": {"properties": {"card": {"type": "null"}}}}],
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
   "additionalProperties": true
 }

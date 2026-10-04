@@ -8,7 +8,7 @@
 普通事件使用以下 envelope，具体事件增加各自字段：
 
 ```json
-{"schema_version":"0.5","mod_version":"0.1.1","recorder_session":"session-uuid","capture_mode":"game_actions","event_seq":12,"timestamp_ms":1780000000000,"run_id":"run-uuid","type":"action_begin"}
+{"schema_version":"0.5","mod_version":"0.1.3","recorder_session":"session-uuid","capture_mode":"game_actions","event_seq":12,"timestamp_ms":1780000000000,"run_id":"run-uuid","type":"action_begin"}
 ```
 
 | 字段 | 含义 |
@@ -84,6 +84,9 @@ Mod 内部以队列对象身份关联提交和执行，不按时间或同名卡�
 executed 证明动作进入执行分支，不表示所有效果和视觉动画已经结束。结算边界也不要求
 视觉特效全部结束；结束回合的结算包含敌方行动及下一回合准备，战斗结束可作为终止边界。
 
+Mod 0.1.3 起，双重打击等队首自动重放链处理完后才关闭前一个人类动作的结算跟踪。
+自动队列项不会产生独立 action_begin/accepted；它们只延长原动作的结算窗口。
+
 执行事件与状态可能不完整，引用不可用为 null。消费者保留提交/执行两套观察，
 并按自己的任务选择使用。skipped/cancelled 不能解释为已成功执行的动作。
 
@@ -111,7 +114,7 @@ executed 证明动作进入执行分支，不表示所有效果和视觉动画�
 | MAP:x=..:y=.. / map_node_selected | 节点坐标 |
 | CHOOSE:index=0 / map_boss_selected | 本幕 Boss 入口 |
 | CHOOSE:index=.. / neow_option_selected、event_option_selected | 选项下标、事件类 |
-| CHOOSE:index=.. / event_card_flipped | 棋盘位置下标、card_uuid；自动翻回不计为玩家操作 |
+| CHOOSE:index=.. / event_card_flipped | option_index 为当前源选项下标，card_uuid；0.1.2 起另有固定 board_position；自动翻回不计为玩家操作 |
 | CHOOSE:index=0 / event_wheel_spun | 启动转盘 |
 | CAMPFIRE:REST/SMITH/LIFT/TOKE/DIG/RECALL / campfire_action | 营火入口选项 |
 | OPEN:SHOP / shop_opened | 点击商人；地图进入商店房间另有自己的地图动作 |
@@ -129,6 +132,11 @@ executed 证明动作进入执行分支，不表示所有效果和视觉动画�
 PLAY 描述中的手牌序号从 1 起；hand_index、target_index、slot、CHOOSE index 从 0 起。
 实体身份和目标应读取结构化参数，不只解析本地化标签。特殊选择无法用某个通用 CHOOSE
 重放时，原始记录仍保留；可重放动作空间由消费者构建。
+
+Mod 0.1.3 起，单张升级/删除/转化的预览确认从实际 hoveredCard 读取目标，保存到
+确认动作 selected_cards；多选确认保存当前 selectedCards 的副本，合法零张选择保留 []。
+目标不可读取则为 null，不用历史选择猜测。鼠标按下只启动选牌 hitbox，不创建无意义
+的拒绝事务；松开提交和手柄提交仍记录。
 
 ## 版本与消费者约定
 

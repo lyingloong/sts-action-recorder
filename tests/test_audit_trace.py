@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.audit_trace import audit
+from tools.audit_trace import audit, CARD_FLAGS, PLAYER_COUNTERS
 
 
 def events():
@@ -84,6 +84,90 @@ class AuditTraceTests(unittest.TestCase):
                            "event_seq": 4, "type": "action_execution_result", "status": "cancelled"})
         values[-1]["event_seq"] = 5
         self.assertEqual(self.check_events(values)["errors"], [])
+
+    def runtime_events(self):
+        values = events()
+        for value in values:
+            value["mod_version"] = "0.1.2"
+        state = values[0]["message"]["game_state"]
+        state["deck"] = [{"id": "Strike_R"} | dict.fromkeys(CARD_FLAGS, False)]
+        state["combat_state"]["player"] = dict.fromkeys(PLAYER_COUNTERS, 0) | {
+            "stance": {"id": "Neutral", "name": "中立", "description": ""}}
+        return values
+
+    def test_new_card_and_player_fields_are_checked(self):
+        values = self.runtime_events()
+        self.assertEqual(self.check_events(values)["warnings"], [])
+        state = values[0]["message"]["game_state"]
+        del state["deck"][0]["self_retain"]
+        del state["combat_state"]["player"]["stance"]
+        self.assertEqual(len(self.check_events(values)["warnings"]), 2)
+        state["deck"][0]["retain"] = 1
+        state["combat_state"]["player"]["game_hand_size"] = False
+        self.assertEqual(len(self.check_events(values)["errors"]), 2)
+
+    def test_missing_runtime_values_may_be_null(self):
+        values = self.runtime_events()
+        state = values[0]["message"]["game_state"]
+        state["deck"][0].update(dict.fromkeys(CARD_FLAGS, None))
+        state["combat_state"]["player"] = dict.fromkeys(PLAYER_COUNTERS + ("stance",), None)
+        result = self.check_events(values)
+        self.assertEqual(result["errors"], [])
+        self.assertEqual(result["warnings"], [])
+
+    def test_match_board_privacy_and_coordinates(self):
+        values = self.runtime_events()
+        state = values[0]["message"]["game_state"]
+        state["screen_state"] = {"event_id": "Match and Keep!", "match_game": {
+            "phase": "PLAY", "remaining_attempts": 4, "matched_pairs": 0,
+            "game_done": False, "awaiting_resolution": False, "selected_positions": [],
+            "board": [{"position": 5, "row": 1, "column": 1, "uuid": "u",
+                       "face_up": False, "revealed": False, "matched": False, "card": None}]}}
+        self.assertEqual(self.check_events(values)["errors"], [])
+        item = state["screen_state"]["match_game"]["board"][0]
+        item.update(card={"id": "secret"}, row=2)
+        errors = self.check_events(values)["errors"]
+        self.assertTrue(any("unrevealed" in error for error in errors))
+        self.assertTrue(any("coordinates" in error for error in errors))
+
+    def test_match_event_requires_public_board_in_new_version(self):
+        values = self.runtime_events()
+        values[0]["message"]["game_state"]["screen_state"] = {"event_id": "Match and Keep!"}
+        self.assertTrue(any("missing match_game" in warning for warning in self.check_events(values)["warnings"]))
+        values[0]["mod_version"] = "0.1.1"
+        self.assertEqual(self.check_events(values)["warnings"], [])
+
+    def test_confirmation_preview_target_is_checked_in_fixed_version(self):
+        values = self.runtime_events()
+        for value in values:
+            value["mod_version"] = "0.1.3"
+        state = values[0]["message"]["game_state"]
+        state["screen_type"] = "GRID"
+        state["screen_state"] = {"confirm_screen_up": True, "selected_cards": [],
+                                 "confirmation_card": {"id": "Strike_R", "uuid": "target"}}
+        action = {"id": "SELECT_CARDS:CONFIRM", "kind": "card_selection_confirmed", "screen": "grid",
+                  "selected_cards": [{"card_id": "Strike_R", "card_uuid": "target"}]}
+        values[2]["action"] = action
+        self.assertEqual(self.check_events(values)["errors"], [])
+        action["selected_cards"] = []
+        self.assertTrue(any("confirmation target mismatch" in error for error in self.check_events(values)["errors"]))
+        values[2]["mod_version"] = "0.1.2"
+        self.assertEqual(self.check_events(values)["errors"], [])
+
+    def test_confirmation_can_preserve_unknown_and_valid_zero_selection(self):
+        values = self.runtime_events()
+        for value in values:
+            value["mod_version"] = "0.1.3"
+        state = values[0]["message"]["game_state"]
+        state["screen_type"] = "HAND_SELECT"
+        state["screen_state"] = {"selected": []}
+        action = {"id": "SELECT_CARDS:HAND_CONFIRM", "kind": "card_selection_confirmed",
+                  "screen": "hand", "selected_cards": []}
+        values[2]["action"] = action
+        self.assertEqual(self.check_events(values)["errors"], [])
+        self.assertEqual(self.check_events(values)["warnings"], [])
+        action["selected_cards"] = None
+        self.assertTrue(any("targets unavailable" in warning for warning in self.check_events(values)["warnings"]))
 
 
 if __name__ == "__main__":

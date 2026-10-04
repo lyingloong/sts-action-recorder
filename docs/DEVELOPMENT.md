@@ -12,6 +12,8 @@ src/main/java/actionrecorder/
   runtime/ActionRecorderRuntime.java     对局身份、事务、后台 JSONL/TCP 输出
   runtime/CommunicationStateBridge.java  调用 CommunicationMod 发布接口
   runtime/QueuedDecisionTracker.java     排队动作身份与执行生命周期
+  runtime/RuntimeStateFields.java        卡牌/玩家原始字段投影、缓存反射与 null 约定
+  runtime/MatchGameState.java            翻牌公开棋盘、固定位置与已揭示记忆
   patches/CommunicationStatePatches.java 状态 ID、钥匙、卡牌/选牌字段补充
   patches/DecisionPatches.java           细粒度游戏动作入口
   patches/RawInputPatches.java           键鼠调试输入
@@ -73,12 +75,19 @@ $patchClasspath = "target/classes;target/test-classes;$gameJar;$baseModJar;$mtsJ
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.PatchBindingSmoke
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.PatchInstrumentationSmoke
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.QueuedDecisionTrackerSmoke
+& "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.RuntimeStateFieldsSmoke
+& "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.CommunicationSerializationSmoke
 ```
 
 PatchBindingSmoke 使用 ModTheSpire 参数绑定逻辑检查 prefix/postfix，包括历史错误签名的
 失败回归。PatchInstrumentationSmoke 对实际安装 jar 编译 ExprEditor 替换代码。
-QueuedDecisionTrackerSmoke 检查对象身份、执行/取消和重置。这些检查不代替游戏启动和
+QueuedDecisionTrackerSmoke 检查对象身份、执行/取消和重置。RuntimeStateFieldsSmoke 用
+合成对象检查运行时标记、玩家计数/姿态、翻牌位置与公开信息边界。这些检查不代替游戏启动和
 [实际采集验收](COLLECTION_AUDIT.md)。其他系统使用相应 classpath 分隔符和 Java 路径。
+
+CommunicationSerializationSmoke 使用实际 CommunicationMod 的 shaded Gson 执行 serializer
+补丁，验证中立姿态名称、隐藏牌面和未知字段的 null 穿过序列化与 JSON 树保存边界。
+队列测试覆盖自动连锁、下一项人类操作和结束回合等待；字段测试包含单卡预览/多选确认。
 
 ## 采集实现
 
