@@ -13,6 +13,8 @@ import com.megacrit.cardcrawl.screens.select.HandCardSelectScreen;
 import com.megacrit.cardcrawl.ui.buttons.CardSelectConfirmButton;
 import com.megacrit.cardcrawl.ui.buttons.GridSelectConfirmButton;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
 
 import java.io.BufferedWriter;
 import java.io.File;
@@ -30,14 +32,15 @@ import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Game-side semantic decision recorder with optional raw-input diagnostics.
  */
 public final class ActionRecorderRuntime {
     private static final ActionRecorderRuntime INSTANCE = new ActionRecorderRuntime();
-    private static final String MOD_VERSION = "0.1.0";
-    private static final String SCHEMA_VERSION = "0.4";
+    private static final String MOD_VERSION = "0.1.1";
+    private static final String SCHEMA_VERSION = "0.5";
 
     private final String host;
     private final int port;
@@ -47,6 +50,7 @@ public final class ActionRecorderRuntime {
     private final CaptureMode captureMode;
     private final String recorderSession = UUID.randomUUID().toString();
     private final BlockingQueue<QueuedEvent> eventQueue = new LinkedBlockingQueue<QueuedEvent>();
+    private final BlockingQueue<String> tcpQueue = new LinkedBlockingQueue<String>(1024);
     private final CommunicationStateBridge stateBridge = new CommunicationStateBridge();
     /**
      * Transaction ids are emitted before the game mutates its state.  The
@@ -55,8 +59,11 @@ public final class ActionRecorderRuntime {
      * wall-clock timestamp alone.
      */
     private final Deque<String> transactionStack = new ArrayDeque<String>();
+    private final Object endTurnToken = new Object();
+    private final QueuedDecisionTracker<Object> queuedDecisions = new QueuedDecisionTracker<Object>();
     private volatile boolean accepting = true;
     private final Thread writerThread;
+    private final Thread senderThread;
 
     private Socket socket;
     private BufferedWriter writer;
@@ -69,6 +76,7 @@ public final class ActionRecorderRuntime {
     private int lastTurn = -1;
     private String lastRoom = "";
     private String lastGridSelectionSignature = "";
+    private boolean gridPreviewActive;
     private String lastHandSelectionSignature = "";
     private String savedRunId;
     private String savedFingerprint;
@@ -78,8 +86,8 @@ public final class ActionRecorderRuntime {
     private volatile AvailableActionsOverlay availableActionsOverlay;
     /** Last CommunicationMod state, used only by the optional in-game debug overlay. */
     private JsonObject latestFrameSnapshot;
-    private String lastGridConfirmSignature = "";
-    private String lastHandConfirmSignature = "";
+    private String publishedStateId;
+    private long publishedStateSeq;
 
     private ActionRecorderRuntime() {
         host = property("host", "127.0.0.1");
@@ -95,7 +103,20 @@ public final class ActionRecorderRuntime {
             }
         }, "action-recorder-writer");
         writerThread.setDaemon(true);
+        senderThread = new Thread(new Runnable() {
+            @Override public void run() {
+                while (accepting || writerThread.isAlive() || !tcpQueue.isEmpty()) {
+                    try {
+                        String message = tcpQueue.poll(100, TimeUnit.MILLISECONDS);
+                        if (message != null) sendTcp(message);
+                    } catch (InterruptedException ignored) { }
+                }
+                closeConnection();
+            }
+        }, "action-recorder-tcp");
+        senderThread.setDaemon(true);
         writerThread.start();
+        senderThread.start();
         Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
             @Override
             public void run() {
@@ -120,6 +141,8 @@ public final class ActionRecorderRuntime {
     /** Remember terminal screens before CardCrawlGame clears its dungeon reference. */
     public synchronized void markRunTerminal(String reason) {
         if (!inRun) return;
+        if (!terminalRun) emit("run_finished", "\"reason\":" + quote(reason)
+                + ",\"terminal\":true,\"context\":" + contextJson());
         terminalRun = true;
         terminalReason = reason;
     }
@@ -180,6 +203,10 @@ public final class ActionRecorderRuntime {
     }
 
     private void recordActionFromSnapshot(String id, String kind, String details) {
+        acceptActionFromSnapshot(id, kind, details, false);
+    }
+
+    private String acceptActionFromSnapshot(String id, String kind, String details, boolean tracked) {
         if (transactionStack.isEmpty()) {
             beginDecision();
         }
@@ -189,12 +216,14 @@ public final class ActionRecorderRuntime {
                 + (details == null || details.length() == 0 ? "" : "," + details)
                 + "}";
         emit("action_accepted", "\"transaction_id\":" + quote(transactionId)
+                + ",\"execution_tracking\":" + tracked
                 + ",\"action\":" + selected
                 + ",\"chosen_action\":" + selected);
         ActionToastOverlay toast = actionToast;
         if (toast != null) {
             toast.show(id, kind);
         }
+        return transactionId;
     }
 
     public synchronized void recordPurchasedPotion(com.megacrit.cardcrawl.potions.AbstractPotion potion, int price) {
@@ -206,9 +235,15 @@ public final class ActionRecorderRuntime {
     /** Call at the entry of a player action, before the game mutates its state. */
     public synchronized void beginDecision() {
         if (captureMode.enabled()) {
+            // Snapshot at the action boundary even if the human acts twice in
+            // one frame. Publication uses CommunicationMod's script channel;
+            // no elapsed-time matching or full serialization every frame.
+            publishedStateId = null;
+            stateBridge.publish();
             String transactionId = recorderSession + ":tx-" + UUID.randomUUID().toString();
             transactionStack.push(transactionId);
             emit("action_begin", "\"transaction_id\":" + quote(transactionId)
+                    + ",\"before_state_id\":" + quote(publishedStateId)
                     + ",\"expected_screen\":" + quote(String.valueOf(AbstractDungeon.screen))
                     + ",\"context\":" + contextJson());
         }
@@ -220,6 +255,12 @@ public final class ActionRecorderRuntime {
             emit("action_rejected", "\"transaction_id\":" + quote(transactionId)
                     + ",\"reason\":\"game_rejected_or_cancelled\"");
         }
+    }
+
+    public synchronized int decisionDepth() { return transactionStack.size(); }
+
+    public synchronized void discardDecisionsAfter(int depth) {
+        while (transactionStack.size() > depth) discardDecision();
     }
 
     public synchronized void recordRawInput(String inputType, String details) {
@@ -271,17 +312,22 @@ public final class ActionRecorderRuntime {
         }
 
         if (!dungeon || AbstractDungeon.player == null) {
+            // Leaving an Act is not leaving the run. Dungeon globals are
+            // temporarily unavailable during the inter-Act transition.
+            if (inRun && !terminalRun
+                    && (com.megacrit.cardcrawl.core.CardCrawlGame.mode
+                        == com.megacrit.cardcrawl.core.CardCrawlGame.GameMode.DUNGEON_TRANSITION
+                    || com.megacrit.cardcrawl.core.CardCrawlGame.mode
+                        == com.megacrit.cardcrawl.core.CardCrawlGame.GameMode.GAMEPLAY)) return;
             if (inRun) {
-                boolean victory = AbstractDungeon.is_victory || AbstractDungeon.isDungeonBeaten;
                 boolean dead = AbstractDungeon.player != null
                         && AbstractDungeon.player.currentHealth <= 0;
-                boolean terminal = terminalRun || victory || dead;
-                if (victory) {
-                    terminalReason = "victory";
-                } else if (dead) {
+                boolean terminal = terminalRun || dead;
+                if (dead && !terminalRun) {
                     terminalReason = "death";
                 }
                 String reason = terminalReason == null ? "dungeon_left" : terminalReason;
+                cancelPendingQueued("dungeon_left_before_execution");
                 emit("run_ended", "\"reason\":" + quote(reason) + ",\"terminal\":" + terminal);
                 if (terminal) {
                     savedRunId = null;
@@ -307,23 +353,49 @@ public final class ActionRecorderRuntime {
 
         if (AbstractDungeon.screen != AbstractDungeon.CurrentScreen.GRID) {
             lastGridSelectionSignature = "";
+            gridPreviewActive = false;
         }
         if (AbstractDungeon.screen != AbstractDungeon.CurrentScreen.HAND_SELECT) {
             lastHandSelectionSignature = "";
-            lastHandConfirmSignature = "";
         }
 
         observeRoom();
         observeCombat();
+        observeQueuedDecisions();
     }
 
-    /** Refresh the action-before cache when CommunicationMod publishes a state. */
-    public synchronized void cachePublishedFrameSnapshot() {
-        JsonObject snapshot = stateBridge.snapshot();
-        if (snapshot != null) {
-            latestFrameSnapshot = snapshot;
+    /** Called only on messages actually passed to CommunicationMod.sendMessage. */
+    public synchronized String capturePublishedState(String message) {
+        try {
+            JsonElement parsed = new JsonParser().parse(message);
+            if (!parsed.isJsonObject()) return message;
+            JsonObject root = parsed.getAsJsonObject();
+            if (!root.has("in_game") || root.has("error")) return message;
+            // Initialize metadata before the first boundary snapshot is saved.
+            if (root.get("in_game").getAsBoolean() && !inRun
+                    && AbstractDungeon.player != null && AbstractDungeon.isPlayerInDungeon()) update();
+            publishedStateId = recorderSession + ":state-" + (++publishedStateSeq);
+            root.addProperty("recorder_state_id", publishedStateId);
+            root.addProperty("recorder_state_seq", publishedStateSeq);
+            root.addProperty("recorder_session", recorderSession);
+            JsonObject saved = new JsonParser().parse(root.toString()).getAsJsonObject();
+            if (saved.has("game_state") && saved.get("game_state").isJsonObject()) {
+                JsonObject state = saved.getAsJsonObject("game_state");
+                state.remove("seed");
+                if (!state.has("screen_type") || state.get("screen_type").isJsonNull()
+                        || !"MAP".equals(state.get("screen_type").getAsString())) {
+                    state.add("map", com.google.gson.JsonNull.INSTANCE);
+                }
+            }
+            latestFrameSnapshot = saved;
             AvailableActionsOverlay overlay = availableActionsOverlay;
-            if (overlay != null) overlay.setSnapshot(snapshot);
+            if (overlay != null) overlay.setSnapshot(saved);
+            if (captureMode.enabled()) emit("state_published", "\"state_id\":" + quote(publishedStateId)
+                    + ",\"state_seq\":" + publishedStateSeq + ",\"message\":" + saved.toString());
+            return root.toString();
+        } catch (Throwable exc) {
+            System.err.println("[ActionRecorder] cannot capture published state: " + exc);
+            return message;
         }
     }
 
@@ -389,7 +461,119 @@ public final class ActionRecorderRuntime {
                 + ",\"target_id\":" + quote(targetId)
                 + ",\"energy_on_use\":" + item.energyOnUse
                 + ",\"autoplay\":" + item.autoplayCard;
-        recordAction(id, "play_card", details);
+        if (item.autoplayCard) { discardDecision(); return; }
+        String transactionId = acceptActionFromSnapshot(id, "play_card", details, true);
+        queuedDecisions.register(item, transactionId, com.megacrit.cardcrawl.actions.GameActionManager.turn);
+    }
+
+    public synchronized void recordEndTurnQueued() {
+        if (!captureMode.enabled()) return;
+        String transactionId = acceptActionFromSnapshot("END_TURN", "end_turn",
+                "\"turn\":" + com.megacrit.cardcrawl.actions.GameActionManager.turn, true);
+        queuedDecisions.register(endTurnToken, transactionId,
+                com.megacrit.cardcrawl.actions.GameActionManager.turn);
+    }
+
+    /** At getNextAction entry, before queue validation, counters, powers or RNG change. */
+    public synchronized void beforeQueueExecution(com.megacrit.cardcrawl.actions.GameActionManager manager) {
+        if (!captureMode.enabled() || manager == null || manager.currentAction != null
+                || !manager.actions.isEmpty() || !manager.preTurnActions.isEmpty()) return;
+        QueuedDecisionTracker.Entry<Object> active = queuedDecisions.active();
+        if (active != null && active.dispatched) {
+            // End-turn includes the enemy turn and next turn's draw/energy.
+            if (active.item == endTurnToken
+                    && com.megacrit.cardcrawl.actions.GameActionManager.turn <= active.turn) return;
+            settleActiveExecution();
+        }
+        if (queuedDecisions.active() != null || manager.cardQueue.isEmpty()) return;
+        CardQueueItem head = manager.cardQueue.get(0);
+        Object key = head.card == null ? endTurnToken : head;
+        if (!queuedDecisions.hasPending(key)) return; // Engine autoplay is not a human decision.
+        QueuedDecisionTracker.Entry<Object> entry = queuedDecisions.begin(key);
+        publishedStateId = null;
+        stateBridge.publish();
+        emit("action_execution_begin", "\"transaction_id\":" + quote(entry.transactionId)
+                + ",\"execution_before_state_id\":" + quote(publishedStateId)
+                + ",\"action\":" + executionActionJson(head)
+                + ",\"logical_boundary\":true,\"context\":" + contextJson());
+    }
+
+    private String executionActionJson(CardQueueItem item) {
+        if (item.card == null) return "{\"id\":\"END_TURN\",\"kind\":\"end_turn\"}";
+        int index = AbstractDungeon.player.hand.group.indexOf(item.card);
+        int target = item.monster == null ? -1 : AbstractDungeon.getCurrRoom().monsters.monsters.indexOf(item.monster);
+        String id = "PLAY:card=" + (index < 0 ? "?" : String.valueOf(index + 1))
+                + (target < 0 ? "" : ":target=" + target);
+        return "{\"id\":" + quote(id) + ",\"kind\":\"play_card\",\"card_uuid\":"
+                + quote(String.valueOf(item.card.uuid)) + ",\"card_id\":" + quote(item.card.cardID)
+                + ",\"target_index\":" + target + ",\"target_id\":"
+                + quote(item.monster == null ? null : item.monster.id) + "}";
+    }
+
+    /** Only the actual useCard branch proves that a queued card was executed. */
+    public synchronized void cardExecutionDispatched(AbstractCard card) {
+        QueuedDecisionTracker.Entry<Object> active = queuedDecisions.active();
+        if (active != null && active.item instanceof CardQueueItem
+                && ((CardQueueItem) active.item).card == card) dispatchActiveExecution();
+    }
+
+    public synchronized void endTurnExecutionDispatched() {
+        QueuedDecisionTracker.Entry<Object> active = queuedDecisions.active();
+        if (active != null && active.item == endTurnToken) dispatchActiveExecution();
+    }
+
+    private void dispatchActiveExecution() {
+        QueuedDecisionTracker.Entry<Object> active = queuedDecisions.active();
+        if (active == null || active.dispatched) return;
+        active.dispatched = true;
+        emit("action_execution_result", "\"transaction_id\":" + quote(active.transactionId)
+                + ",\"status\":\"executed\"");
+    }
+
+    public synchronized void afterQueueExecution(com.megacrit.cardcrawl.actions.GameActionManager manager) {
+        QueuedDecisionTracker.Entry<Object> active = queuedDecisions.active();
+        if (active == null || active.dispatched) return;
+        if (active.item instanceof CardQueueItem && manager.cardQueue.contains(active.item)) return;
+        queuedDecisions.finishActive();
+        emitExecutionCancelled(active, "skipped", "queue_validation_failed");
+    }
+
+    private void settleActiveExecution() {
+        QueuedDecisionTracker.Entry<Object> active = queuedDecisions.finishActive();
+        if (active == null) return;
+        publishedStateId = null;
+        stateBridge.publish();
+        emit("action_effects_settled", "\"transaction_id\":" + quote(active.transactionId)
+                + ",\"after_state_id\":" + quote(publishedStateId) + ",\"logical_boundary\":true");
+    }
+
+    private void emitExecutionCancelled(QueuedDecisionTracker.Entry<Object> entry, String status, String reason) {
+        emit("action_execution_result", "\"transaction_id\":" + quote(entry.transactionId)
+                + ",\"status\":" + quote(status) + ",\"reason\":" + quote(reason));
+    }
+
+    private void cancelPendingQueued(String reason) {
+        for (QueuedDecisionTracker.Entry<Object> entry : queuedDecisions.removeMissing(
+                java.util.Collections.emptyList())) emitExecutionCancelled(entry, "cancelled", reason);
+        QueuedDecisionTracker.Entry<Object> active = queuedDecisions.finishActive();
+        if (active != null && !active.dispatched) emitExecutionCancelled(active, "cancelled", reason);
+    }
+
+    /** Lightweight identity checks only: no per-frame state serialization. */
+    private void observeQueuedDecisions() {
+        if (queuedDecisions.active() == null && !queuedDecisions.hasPending()) return;
+        com.megacrit.cardcrawl.actions.GameActionManager manager = AbstractDungeon.actionManager;
+        if (manager == null) return;
+        QueuedDecisionTracker.Entry<Object> active = queuedDecisions.active();
+        boolean combatEnded = terminalRun || AbstractDungeon.getCurrRoom() == null
+                || AbstractDungeon.getCurrRoom().phase != AbstractRoom.RoomPhase.COMBAT;
+        if (active != null && active.dispatched && combatEnded) settleActiveExecution();
+        if (!queuedDecisions.hasPending()) return;
+        java.util.ArrayList<Object> live = new java.util.ArrayList<Object>(manager.cardQueue);
+        if (!combatEnded) live.add(endTurnToken);
+        for (QueuedDecisionTracker.Entry<Object> missing : queuedDecisions.removeMissing(live)) {
+            emitExecutionCancelled(missing, "cancelled", "queue_removed_without_execution");
+        }
     }
 
     /** Emits selection changes once, preserving multi-card interactions. */
@@ -418,7 +602,7 @@ public final class ActionRecorderRuntime {
 
     /** Emits selection changes once, preserving multi-card interactions. */
     public synchronized boolean recordGridSelection(GridCardSelectScreen screen) {
-        if (!captureMode.enabled() || screen == null || screen.selectedCards == null) {
+        if (!captureMode.enabled() || screen == null || screen.selectedCards == null || screen.confirmScreenUp) {
             return false;
         }
         StringBuilder signature = new StringBuilder();
@@ -433,7 +617,13 @@ public final class ActionRecorderRuntime {
         }
         if (AbstractDungeon.screen != AbstractDungeon.CurrentScreen.GRID) return false;
         // An empty selection when a new grid opens is its initial state.
-        if (value.isEmpty() && lastGridSelectionSignature.isEmpty()) return false;
+        // An empty set after a preview's Return is automatic UI cleanup, not
+        // another player choice. The Return itself is recorded separately.
+        if (value.isEmpty() && (lastGridSelectionSignature.isEmpty() || gridPreviewActive)) {
+            lastGridSelectionSignature = "";
+            gridPreviewActive = false;
+            return false;
+        }
         lastGridSelectionSignature = value;
         recordAction("SELECT_CARDS:grid:" + value, "card_selection_changed",
                 "\"screen\":\"grid\",\"selected_cards\":" + cardListJson(screen.selectedCards)
@@ -444,7 +634,33 @@ public final class ActionRecorderRuntime {
         return true;
     }
 
+    /** Upgrade/transform previews do not yet add the card to selectedCards. */
+    public synchronized void recordGridPreview(GridCardSelectScreen screen) {
+        if (screen == null || screen.confirmScreenUp) return;
+        AbstractCard card;
+        try {
+            java.lang.reflect.Field hovered = GridCardSelectScreen.class.getDeclaredField("hoveredCard");
+            hovered.setAccessible(true);
+            card = (AbstractCard) hovered.get(screen);
+        } catch (ReflectiveOperationException exc) { return; }
+        if (card == null) return;
+        gridPreviewActive = true;
+        String signature = String.valueOf(card.uuid) + ";";
+        if (signature.equals(lastGridSelectionSignature)) return;
+        recordAction("SELECT_CARDS:grid:" + signature, "card_selection_changed",
+                "\"screen\":\"grid\",\"card_uuid\":" + quote(String.valueOf(card.uuid))
+                        + ",\"selected_cards\":" + cardListJson(java.util.Collections.singletonList(card))
+                        + ",\"for_upgrade\":" + screen.forUpgrade
+                        + ",\"for_transform\":" + screen.forTransform
+                        + ",\"for_purge\":" + screen.forPurge);
+        lastGridSelectionSignature = signature;
+    }
+
     public synchronized boolean recordHandSelection(HandCardSelectScreen screen) {
+        return recordHandSelection(screen, null);
+    }
+
+    public synchronized boolean recordHandSelection(HandCardSelectScreen screen, String cardUuid) {
         if (!captureMode.enabled() || screen == null || screen.selectedCards == null) {
             return false;
         }
@@ -463,8 +679,24 @@ public final class ActionRecorderRuntime {
         if (value.isEmpty() && lastHandSelectionSignature.isEmpty()) return false;
         lastHandSelectionSignature = value;
         recordAction("SELECT_CARDS:hand:" + value, "card_selection_changed",
-                "\"screen\":\"hand\",\"selected_cards\":" + cardListJson(screen.selectedCards.group));
+                "\"screen\":\"hand\",\"card_uuid\":" + quote(cardUuid)
+                        + ",\"selected_cards\":" + cardListJson(screen.selectedCards.group));
         return true;
+    }
+
+    public synchronized void recordHandDeselection(Object group, AbstractCard card) {
+        HandCardSelectScreen screen = AbstractDungeon.handCardSelectScreen;
+        if (screen == null || AbstractDungeon.screen != AbstractDungeon.CurrentScreen.HAND_SELECT
+                || AbstractDungeon.player == null || group != AbstractDungeon.player.hand
+                || !screen.selectedCards.group.contains(card)) return;
+        java.util.ArrayList<AbstractCard> selected = new java.util.ArrayList<AbstractCard>(screen.selectedCards.group);
+        selected.remove(card);
+        StringBuilder signature = new StringBuilder();
+        for (AbstractCard item : selected) signature.append(item.uuid).append(';');
+        recordAction("SELECT_CARDS:hand:" + signature, "card_selection_changed",
+                "\"screen\":\"hand\",\"operation\":\"deselect\",\"card_uuid\":" + quote(String.valueOf(card.uuid))
+                        + ",\"selected_cards\":" + cardListJson(selected));
+        lastHandSelectionSignature = signature.toString();
     }
 
     /** Called immediately after the confirm button handles this frame, before the grid screen clears its click flag. */
@@ -472,19 +704,10 @@ public final class ActionRecorderRuntime {
         if (!captureMode.enabled() || button == null || button.hb == null
                 || !button.hb.clicked || button.isDisabled
                 || AbstractDungeon.gridSelectScreen == null
-                || AbstractDungeon.gridSelectScreen.selectedCards == null
-                || AbstractDungeon.gridSelectScreen.selectedCards.isEmpty()) {
-            lastGridConfirmSignature = "";
+                || AbstractDungeon.gridSelectScreen.selectedCards == null) {
             return;
         }
         GridCardSelectScreen screen = AbstractDungeon.gridSelectScreen;
-        StringBuilder signature = new StringBuilder();
-        for (AbstractCard card : screen.selectedCards) {
-            if (card != null) signature.append(card.uuid).append(';');
-        }
-        String selectedSignature = signature.toString();
-        if (selectedSignature.equals(lastGridConfirmSignature)) return;
-        lastGridConfirmSignature = selectedSignature;
         recordAction("SELECT_CARDS:CONFIRM", "card_selection_confirmed",
                 "\"screen\":\"grid\",\"selected_cards\":" + cardListJson(screen.selectedCards)
                         + ",\"for_upgrade\":" + screen.forUpgrade
@@ -498,18 +721,9 @@ public final class ActionRecorderRuntime {
         HandCardSelectScreen screen = AbstractDungeon.handCardSelectScreen;
         if (!captureMode.enabled() || button == null || button.hb == null
                 || !button.hb.clicked || button.isDisabled || screen == null
-                || screen.selectedCards == null || screen.selectedCards.group == null
-                || screen.selectedCards.group.isEmpty()) {
-            lastHandConfirmSignature = "";
+                || screen.selectedCards == null || screen.selectedCards.group == null) {
             return;
         }
-        StringBuilder signature = new StringBuilder();
-        for (AbstractCard card : screen.selectedCards.group) {
-            if (card != null) signature.append(card.uuid).append(';');
-        }
-        String selectedSignature = signature.toString();
-        if (selectedSignature.equals(lastHandConfirmSignature)) return;
-        lastHandConfirmSignature = selectedSignature;
         recordAction("SELECT_CARDS:HAND_CONFIRM", "card_selection_confirmed",
                 "\"screen\":\"hand\",\"selected_cards\":"
                         + cardListJson(screen.selectedCards.group));
@@ -573,13 +787,13 @@ public final class ActionRecorderRuntime {
         lastTurn = -1;
         lastRoom = "";
         lastGridSelectionSignature = "";
+        gridPreviewActive = false;
         lastHandSelectionSignature = "";
         activeRunId = null;
         activeFile = null;
         latestFrameSnapshot = null;
-        lastGridConfirmSignature = "";
-        lastHandConfirmSignature = "";
         transactionStack.clear();
+        queuedDecisions.clear();
     }
 
     private void startOrResumeRun() {
@@ -636,12 +850,13 @@ public final class ActionRecorderRuntime {
             try {
                 QueuedEvent event = eventQueue.take();
                 writeLocal(event);
-                sendTcp(event.message);
+                if (!tcpQueue.offer(event.message)) {
+                    System.err.println("[ActionRecorder] TCP queue full; event retained in local journal");
+                }
             } catch (InterruptedException exc) {
                 // Shutdown interrupts the worker so it can drain the queue.
             }
         }
-        closeConnection();
         closeLocalFiles();
     }
 
@@ -747,6 +962,7 @@ public final class ActionRecorderRuntime {
         writerThread.interrupt();
         try {
             writerThread.join(2000L);
+            senderThread.join(1000L);
         } catch (InterruptedException ignored) {
             Thread.currentThread().interrupt();
         }

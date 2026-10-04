@@ -60,7 +60,8 @@ import java.lang.reflect.Field;
 public final class DecisionPatches {
     private static AbstractEvent lastEventAction;
     private static int lastEventOption = -1;
-    private static long lastEventActionAt;
+    private static long lastEventActionFrame;
+    private static AbstractChest pendingChest;
 
     private DecisionPatches() {
     }
@@ -75,17 +76,41 @@ public final class DecisionPatches {
         }
     }
 
-    @SpirePatch(clz = AbstractDungeon.class, method = "setCurrMapNode")
+    @SpirePatch(clz = com.megacrit.cardcrawl.screens.VictoryScreen.class,
+            method = SpirePatch.CONSTRUCTOR, paramtypez = {MonsterGroup.class})
+    public static class VictoryRunTerminal {
+        @SpirePostfixPatch public static void postfix() {
+            ActionRecorderRuntime.getInstance().markRunTerminal("victory");
+        }
+    }
+
+    @SpirePatch(clz = MapRoomNode.class, method = "playNodeSelectedSound")
     public static class MapNodeSelection {
         @SpirePrefixPatch
-        public static void prefix(MapRoomNode node) {
-            if (node == null) {
+        public static void prefix(MapRoomNode __instance) {
+            MapRoomNode node = __instance;
+            if (node == null || node.y < 0 || AbstractDungeon.screen != AbstractDungeon.CurrentScreen.MAP) {
                 return;
             }
             ActionRecorderRuntime.getInstance().recordAction(
                     "MAP:x=" + node.x + ":y=" + node.y,
                     "map_node_selected",
                     "\"x\":" + node.x + ",\"y\":" + node.y);
+        }
+    }
+
+    @SpirePatch(clz = com.megacrit.cardcrawl.map.DungeonMap.class, method = "update")
+    public static class BossMapSelection {
+        @SpireInstrumentPatch public static ExprEditor instrument() {
+            return new ExprEditor() {
+                @Override public void edit(FieldAccess access) throws CannotCompileException {
+                    if (access.isWriter() && "taken".equals(access.getFieldName())
+                            && "com.megacrit.cardcrawl.map.MapRoomNode".equals(access.getClassName())) {
+                        access.replace("{ if ($1) actionrecorder.runtime.ActionRecorderRuntime.getInstance().recordAction("
+                                + "\"CHOOSE:index=0\", \"map_boss_selected\", \"\"); $proceed($$); }");
+                    }
+                }
+            };
         }
     }
 
@@ -275,8 +300,7 @@ public final class DecisionPatches {
             EndTurnButton button = __instance;
             if (wasEnabled && endTurn && AbstractDungeon.player != null
                     && AbstractDungeon.player.endTurnQueued) {
-                ActionRecorderRuntime.getInstance().recordAction(
-                        "END_TURN", "end_turn", "\"turn\":" + GameActionManager.turn);
+                ActionRecorderRuntime.getInstance().recordEndTurnQueued();
             } else if (wasEnabled) {
                 ActionRecorderRuntime.getInstance().discardDecision();
             }
@@ -299,6 +323,31 @@ public final class DecisionPatches {
                 ActionRecorderRuntime.getInstance().recordCardQueued(item);
             } else {
                 ActionRecorderRuntime.getInstance().discardDecision();
+            };
+        }
+    }
+
+    @SpirePatch(clz = GameActionManager.class, method = "getNextAction")
+    public static class QueuedExecutionBoundary {
+        @SpirePrefixPatch public static void prefix(GameActionManager __instance) {
+            ActionRecorderRuntime.getInstance().beforeQueueExecution(__instance);
+        }
+        @SpirePostfixPatch public static void postfix(GameActionManager __instance) {
+            ActionRecorderRuntime.getInstance().afterQueueExecution(__instance);
+        }
+        @SpireInstrumentPatch public static ExprEditor instrument() {
+            return new ExprEditor() {
+                @Override public void edit(MethodCall call) throws CannotCompileException {
+                    if ("com.megacrit.cardcrawl.characters.AbstractPlayer".equals(call.getClassName())
+                            && "useCard".equals(call.getMethodName())) {
+                        call.replace("{ $proceed($$); actionrecorder.runtime.ActionRecorderRuntime.getInstance()"
+                                + ".cardExecutionDispatched($1); }");
+                    } else if ("callEndOfTurnActions".equals(call.getMethodName())
+                            && GameActionManager.class.getName().equals(call.getClassName())) {
+                        call.replace("{ $proceed($$); actionrecorder.runtime.ActionRecorderRuntime.getInstance()"
+                                + ".endTurnExecutionDispatched(); }");
+                    }
+                }
             };
         }
     }
@@ -355,14 +404,14 @@ public final class DecisionPatches {
         if (event == null || optionIndex < 0) {
             return;
         }
-        long now = System.currentTimeMillis();
+        long now = com.badlogic.gdx.Gdx.graphics.getFrameId();
         if (event == lastEventAction && optionIndex == lastEventOption
-                && now - lastEventActionAt < 250L) {
+                && now == lastEventActionFrame) {
             return;
         }
         lastEventAction = event;
         lastEventOption = optionIndex;
-        lastEventActionAt = now;
+        lastEventActionFrame = now;
         ActionRecorderRuntime.getInstance().recordAction(
                 "CHOOSE:index=" + optionIndex,
                 event instanceof NeowEvent ? "neow_option_selected" : "event_option_selected",
@@ -381,8 +430,12 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = RewardItem.class, method = "claimReward")
     public static class RewardClaim {
+        private static String pendingId;
+        private static String pendingKind;
+        private static String pendingDetails;
         @SpirePrefixPatch
         public static void prefix(RewardItem __instance) {
+            pendingId = null;
             if (__instance == null || __instance.type == null || __instance.ignoreReward) {
                 return;
             }
@@ -409,7 +462,26 @@ public final class DecisionPatches {
                 details += ",\"potion_id\":" + quote(__instance.potion.ID)
                         + ",\"potion_name\":" + quote(__instance.potion.name);
             }
-            ActionRecorderRuntime.getInstance().recordAction(id, "reward_" + type + "_claimed", details);
+            begin();
+            pendingId = id;
+            pendingKind = "reward_" + type + "_claimed";
+            pendingDetails = details;
+        }
+
+        @SpirePostfixPatch
+        public static boolean postfix(boolean __result, RewardItem __instance) {
+            // Legacy @SpirePatch binds a return-value parameter only when it
+            // is first and matches the postfix return type. Preserve it.
+            if (pendingId == null) return __result;
+            boolean cardOpened = __instance.type == RewardItem.RewardType.CARD
+                    && AbstractDungeon.screen == AbstractDungeon.CurrentScreen.CARD_REWARD;
+            if (__result || cardOpened) {
+                ActionRecorderRuntime.getInstance().recordAction(pendingId, pendingKind, pendingDetails);
+            } else {
+                ActionRecorderRuntime.getInstance().discardDecision();
+            }
+            pendingId = null;
+            return __result;
         }
 
         private static boolean hasPotionCapacity() {
@@ -426,10 +498,53 @@ public final class DecisionPatches {
         }
     }
 
+    // keyRequirement sets isOpen BEFORE open() is called. Capture at its
+    // accepted click boundary, otherwise the pre-state already says opened.
+    @SpirePatch(clz = AbstractChest.class, method = "keyRequirement")
+    public static class ChestOpeningBoundary {
+        @SpirePrefixPatch public static void prefix(AbstractChest __instance) {
+            beginChestOpening(__instance);
+        }
+        @SpirePostfixPatch public static boolean postfix(boolean __result, AbstractChest __instance) {
+            if (!__result && pendingChest == __instance) {
+                pendingChest = null;
+                ActionRecorderRuntime.getInstance().discardDecision();
+            }
+            return __result;
+        }
+    }
+
+    public static void beginChestOpening(AbstractChest chest) {
+        if (pendingChest == chest) return;
+        ActionRecorderRuntime.getInstance().beginDecision();
+        pendingChest = chest;
+    }
+
+    @SpirePatch(cls = "communicationmod.ChoiceScreenUtils", method = "makeChestRoomChoice",
+            paramtypez = {int.class}, requiredModId = "CommunicationMod", optional = true)
+    public static class CommunicationChestOpeningBoundary {
+        @SpireInstrumentPatch public static ExprEditor instrument() {
+            return new ExprEditor() {
+                @Override public void edit(FieldAccess field) throws CannotCompileException {
+                    if (field.isWriter() && "isOpen".equals(field.getFieldName())
+                            && "com.megacrit.cardcrawl.rewards.chests.AbstractChest".equals(field.getClassName())) {
+                        field.replace("{ if ($1 && !$0.isOpen) actionrecorder.patches.DecisionPatches"
+                                + ".beginChestOpening($0); $proceed($$); }");
+                    }
+                }
+            };
+        }
+    }
+
+    private static void beginChestOpenMethod(AbstractChest chest) {
+        if (pendingChest != chest) ActionRecorderRuntime.getInstance().beginDecision();
+        pendingChest = null;
+    }
+
     @SpirePatch(clz = AbstractChest.class, method = "open", paramtypez = {boolean.class})
     public static class ChestOpen {
         @SpirePrefixPatch
-        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
+        public static void prefix(AbstractChest __instance) { beginChestOpenMethod(__instance); }
         @SpirePostfixPatch
         public static void postfix(AbstractChest __instance, boolean bossChest) {
             recordChestOpen(__instance, bossChest);
@@ -440,7 +555,7 @@ public final class DecisionPatches {
     @SpirePatch(clz = BossChest.class, method = "open", paramtypez = {boolean.class})
     public static class BossChestOpen {
         @SpirePrefixPatch
-        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
+        public static void prefix(BossChest __instance) { beginChestOpenMethod(__instance); }
         @SpirePostfixPatch
         public static void postfix(BossChest __instance, boolean bossChest) {
             recordChestOpen(__instance, bossChest);
@@ -455,7 +570,7 @@ public final class DecisionPatches {
         ActionRecorderRuntime.getInstance().recordAction(
                 "CHEST:OPEN:" + chest.getClass().getSimpleName(),
                 "chest_opened",
-                "\"boss_chest\":" + bossChest
+                "\"boss_chest\":" + (chest instanceof BossChest)
                         + ",\"gold_reward\":" + chest.goldReward
                         + ",\"gold_amount\":" + chest.GOLD_AMT
                         + ",\"cursed\":" + chest.cursed);
@@ -485,14 +600,19 @@ public final class DecisionPatches {
     @SpirePatch(clz = GridCardSelectScreen.class, method = "update")
     public static class GridSelection {
         private static boolean attempted;
+        private static int depth;
         @SpirePrefixPatch
         public static void prefix() {
-            attempted = true;
+            attempted = InputHelper.justClickedLeft || InputHelper.justReleasedClickLeft
+                    || com.megacrit.cardcrawl.helpers.controller.CInputActionSet.select.isJustPressed();
+            depth = ActionRecorderRuntime.getInstance().decisionDepth();
+            if (attempted) begin();
         }
         @SpirePostfixPatch
         public static void postfix(GridCardSelectScreen __instance) {
             GridCardSelectScreen screen = __instance;
             if (attempted) ActionRecorderRuntime.getInstance().recordGridSelection(screen);
+            ActionRecorderRuntime.getInstance().discardDecisionsAfter(depth);
             attempted = false;
         }
     }
@@ -503,6 +623,13 @@ public final class DecisionPatches {
         @SpireInstrumentPatch
         public static ExprEditor instrument() {
             return new ExprEditor() {
+                @Override public void edit(FieldAccess access) throws CannotCompileException {
+                    if (access.isWriter() && "confirmScreenUp".equals(access.getFieldName())) {
+                        access.replace("{ if ($1 && !$0.confirmScreenUp)"
+                                + " actionrecorder.runtime.ActionRecorderRuntime.getInstance().recordGridPreview($0);"
+                                + " $proceed($$); }");
+                    }
+                }
                 @Override
                 public void edit(MethodCall call) throws CannotCompileException {
                     if ("java.util.ArrayList".equals(call.getClassName())
@@ -516,18 +643,96 @@ public final class DecisionPatches {
         }
     }
 
-    @SpirePatch(clz = HandCardSelectScreen.class, method = "update")
+    @SpirePatch(clz = HandCardSelectScreen.class, method = "selectHoveredCard")
     public static class HandSelection {
-        private static boolean attempted;
+        private static int depth;
+        private static String cardUuid;
         @SpirePrefixPatch
-        public static void prefix() {
-            attempted = true;
+        public static void prefix(HandCardSelectScreen __instance) {
+            depth = ActionRecorderRuntime.getInstance().decisionDepth();
+            cardUuid = __instance.hoveredCard == null ? null : String.valueOf(__instance.hoveredCard.uuid);
+            begin();
         }
         @SpirePostfixPatch
         public static void postfix(HandCardSelectScreen __instance) {
             HandCardSelectScreen screen = __instance;
-            if (attempted) ActionRecorderRuntime.getInstance().recordHandSelection(screen);
-            attempted = false;
+            ActionRecorderRuntime.getInstance().recordHandSelection(screen, cardUuid);
+            ActionRecorderRuntime.getInstance().discardDecisionsAfter(depth);
+        }
+    }
+
+    @SpirePatch(clz = HandCardSelectScreen.class, method = "updateSelectedCards")
+    public static class HandDeselection {
+        @SpireInstrumentPatch public static ExprEditor instrument() {
+            return new ExprEditor() {
+                @Override public void edit(MethodCall call) throws CannotCompileException {
+                    if ("addToTop".equals(call.getMethodName())
+                            && "com.megacrit.cardcrawl.cards.CardGroup".equals(call.getClassName())) {
+                        call.replace("{ actionrecorder.runtime.ActionRecorderRuntime.getInstance()"
+                                + ".recordHandDeselection($0, $1); $proceed($$); }");
+                    }
+                }
+            };
+        }
+    }
+
+    /** Record the accepted face-down -> face-up branch, not hover/cleanup. */
+    @SpirePatch(clz = com.megacrit.cardcrawl.events.shrines.GremlinMatchGame.class,
+            method = "updateMatchGameLogic")
+    public static class MatchGameCardFlip {
+        @SpireInstrumentPatch public static ExprEditor instrument() {
+            return new ExprEditor() {
+                @Override public void edit(FieldAccess access) throws CannotCompileException {
+                    if (access.isWriter() && "isFlipped".equals(access.getFieldName())) {
+                        access.replace("{ if (!$1 && $0.isFlipped)"
+                                + " actionrecorder.patches.DecisionPatches.recordMatchCard(this, $0);"
+                                + " $proceed($$); }");
+                    }
+                }
+            };
+        }
+    }
+
+    public static void recordMatchCard(Object event, AbstractCard card) {
+        Object group = field(event, "cards");
+        if (!(group instanceof com.megacrit.cardcrawl.cards.CardGroup)) return;
+        int index = ((com.megacrit.cardcrawl.cards.CardGroup) group).group.indexOf(card);
+        if (index < 0) return;
+        String actionId = "EVENT:FLIP:card=" + card.uuid;
+        try {
+            // CommunicationMod sorts these cards by board position, not by
+            // the shuffled CardGroup order. Use precisely its public ordering.
+            Object cards = Class.forName("communicationmod.patches.GremlinMatchGamePatch")
+                    .getMethod("getOrderedCards").invoke(null);
+            if (cards instanceof java.util.List) {
+                index = ((java.util.List<?>) cards).indexOf(card);
+                if (index >= 0) actionId = "CHOOSE:index=" + index;
+            }
+        } catch (ReflectiveOperationException ignored) { }
+        ActionRecorderRuntime.getInstance().recordAction(actionId, "event_card_flipped",
+                "\"option_index\":" + index + ",\"card_uuid\":" + quote(String.valueOf(card.uuid))
+                        + ",\"event_class\":" + quote(event.getClass().getName()));
+    }
+
+    @SpirePatch(clz = com.megacrit.cardcrawl.events.shrines.GremlinWheelGame.class, method = "update")
+    public static class WheelSpin {
+        @SpireInstrumentPatch public static ExprEditor instrument() {
+            return new ExprEditor() {
+                @Override public void edit(FieldAccess access) throws CannotCompileException {
+                    if (access.isWriter() && "buttonPressed".equals(access.getFieldName())) {
+                        access.replace("{ if ($1 && !$0.buttonPressed)"
+                                + " actionrecorder.runtime.ActionRecorderRuntime.getInstance().recordAction("
+                                + "\"CHOOSE:index=0\", \"event_wheel_spun\", \"\"); $proceed($$); }");
+                    }
+                }
+            };
+        }
+    }
+
+    @SpirePatch(clz = com.megacrit.cardcrawl.ui.buttons.SingingBowlButton.class, method = "onClick")
+    public static class SingingBowlChoice {
+        @SpirePrefixPatch public static void prefix() {
+            ActionRecorderRuntime.getInstance().recordAction("REWARD:BOWL", "singing_bowl_chosen", "\"max_hp_gain\":2");
         }
     }
 
@@ -684,6 +889,7 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = PotionPopUp.class, method = "updateInput")
     public static class PotionInput {
+        @SpireInstrumentPatch public static ExprEditor instrument() { return potionUseEditor(); }
         @SpirePrefixPatch
         public static void prefix(PotionPopUp __instance) {
             PotionPopUp popup = __instance;
@@ -691,12 +897,7 @@ public final class DecisionPatches {
             Object bottom = field(popup, "hbBot");
             com.megacrit.cardcrawl.potions.AbstractPotion potion =
                     (com.megacrit.cardcrawl.potions.AbstractPotion) field(popup, "potion");
-            if (clicked(top)) {
-                if (potion == null || !potion.targetRequired) {
-                    ActionRecorderRuntime.getInstance().recordPotionAction(
-                            "POTION_USE", "potion_use_requested", intField(popup, "slot"), potion);
-                }
-            } else if (clicked(bottom)) {
+            if (clicked(bottom) && !clicked(top) && potion != null) {
                 ActionRecorderRuntime.getInstance().recordPotionAction(
                         "POTION_DISCARD", "potion_discarded", intField(popup, "slot"),
                         potion);
@@ -706,20 +907,26 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = PotionPopUp.class, method = "updateTargetMode")
     public static class PotionTargetInput {
-        @SpirePrefixPatch
-        public static void prefix(PotionPopUp __instance) {
-            PotionPopUp popup = __instance;
-            if (!InputHelper.justClickedLeft || !boolField(popup, "targetMode")) {
-                return;
+        @SpireInstrumentPatch public static ExprEditor instrument() { return potionUseEditor(); }
+    }
+
+    private static ExprEditor potionUseEditor() {
+        return new ExprEditor() {
+            @Override public void edit(MethodCall call) throws CannotCompileException {
+                if ("use".equals(call.getMethodName())
+                        && "com.megacrit.cardcrawl.potions.AbstractPotion".equals(call.getClassName())) {
+                    call.replace("{ actionrecorder.patches.DecisionPatches.recordPotionUse(this, $0, $1); $proceed($$); }");
+                }
             }
-            Object hovered = field(popup, "hoveredMonster");
-            if (!(hovered instanceof AbstractMonster)) {
-                return;
-            }
-            ActionRecorderRuntime.getInstance().recordPotionUseTarget(
-                    intField(popup, "slot"),
-                    (com.megacrit.cardcrawl.potions.AbstractPotion) field(popup, "potion"),
-                    (AbstractMonster) hovered);
+        };
+    }
+
+    public static void recordPotionUse(PotionPopUp popup, AbstractPotion potion,
+                                      com.megacrit.cardcrawl.core.AbstractCreature target) {
+        if (target instanceof AbstractMonster) {
+            ActionRecorderRuntime.getInstance().recordPotionUseTarget(intField(popup, "slot"), potion, (AbstractMonster) target);
+        } else {
+            ActionRecorderRuntime.getInstance().recordPotionAction("POTION_USE", "potion_use_requested", intField(popup, "slot"), potion);
         }
     }
 

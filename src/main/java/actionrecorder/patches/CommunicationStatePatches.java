@@ -3,11 +3,17 @@ package actionrecorder.patches;
 import actionrecorder.runtime.ActionRecorderRuntime;
 import com.evacipated.cardcrawl.modthespire.lib.SpirePatch;
 import com.evacipated.cardcrawl.modthespire.lib.SpirePostfixPatch;
+import com.evacipated.cardcrawl.modthespire.lib.SpireInstrumentPatch;
+import javassist.CannotCompileException;
+import javassist.expr.ExprEditor;
+import javassist.expr.MethodCall;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
 import java.lang.reflect.Field;
+import java.util.HashMap;
+import com.megacrit.cardcrawl.cards.AbstractCard;
 
 /**
  * Adds fields that the optional CommunicationMod converter does not expose.
@@ -35,20 +41,97 @@ public final class CommunicationStatePatches {
         }
     }
 
+    /** Preserve runtime card numbers; these are not static knowledge entries. */
+    @SpirePatch(cls = "communicationmod.GameStateConverter", method = "convertCardToJson",
+            paramtypez = {AbstractCard.class}, requiredModId = "CommunicationMod", optional = true)
+    public static class CardRuntimeFields {
+        @SpirePostfixPatch public static HashMap<String, Object> postfix(
+                HashMap<String, Object> __result, AbstractCard card) {
+            if (__result == null || card == null) return __result;
+            __result.put("base_damage", card.baseDamage);
+            __result.put("damage", card.damage);
+            __result.put("base_block", card.baseBlock);
+            __result.put("block", card.block);
+            __result.put("base_magic_number", card.baseMagicNumber);
+            __result.put("magic_number", card.magicNumber);
+            __result.put("base_cost", card.cost);
+            __result.put("cost_for_turn", card.costForTurn);
+            __result.put("target", card.target.name());
+            __result.put("raw_description", card.rawDescription);
+            __result.put("color", card.color.name());
+            return __result;
+        }
+    }
+
+    @SpirePatch(cls = "communicationmod.GameStateConverter", method = "getHandSelectState",
+            requiredModId = "CommunicationMod", optional = true)
+    public static class HandSelectionContext {
+        @SpirePostfixPatch public static HashMap<String, Object> postfix(HashMap<String, Object> __result) {
+            com.megacrit.cardcrawl.screens.select.HandCardSelectScreen screen =
+                    com.megacrit.cardcrawl.dungeons.AbstractDungeon.handCardSelectScreen;
+            if (__result == null || screen == null) return __result;
+            __result.put("selection_reason", screen.selectionReason);
+            __result.put("up_to", screen.upTo);
+            __result.put("any_number", privateValue(screen, "anyNumber"));
+            __result.put("for_upgrade", privateValue(screen, "forUpgrade"));
+            __result.put("for_transform", privateValue(screen, "forTransform"));
+            return __result;
+        }
+    }
+
+    @SpirePatch(cls = "communicationmod.GameStateConverter", method = "getGridState",
+            requiredModId = "CommunicationMod", optional = true)
+    public static class GridSelectionContext {
+        @SpirePostfixPatch public static HashMap<String, Object> postfix(HashMap<String, Object> __result) {
+            com.megacrit.cardcrawl.screens.select.GridCardSelectScreen screen =
+                    com.megacrit.cardcrawl.dungeons.AbstractDungeon.gridSelectScreen;
+            if (__result == null || screen == null) return __result;
+            __result.put("selection_reason", privateValue(screen, "tipMsg"));
+            __result.put("confirm_screen_up", screen.confirmScreenUp);
+            __result.put("any_number", screen.anyNumber);
+            __result.put("for_clarity", screen.forClarity);
+            Object hovered = privateValue(screen, "hoveredCard");
+            HashMap<String, Object> confirmation = null;
+            if (screen.confirmScreenUp && hovered instanceof AbstractCard) {
+                AbstractCard card = (AbstractCard) hovered;
+                confirmation = new HashMap<String, Object>();
+                confirmation.put("id", card.cardID);
+                confirmation.put("name", card.name);
+                confirmation.put("uuid", String.valueOf(card.uuid));
+            }
+            __result.put("confirmation_card", confirmation);
+            return __result;
+        }
+    }
+
+    private static Object privateValue(Object instance, String name) {
+        try {
+            Field field = instance.getClass().getDeclaredField(name);
+            field.setAccessible(true);
+            return field.get(instance);
+        } catch (ReflectiveOperationException ignored) { return null; }
+    }
+
     /**
-     * CommunicationMod only publishes a new external state after its own
-     * change detector says the game state changed. Reuse that boundary for the
-     * recorder cache instead of serializing the complete state every update.
+     * Stamp the actual outgoing message, not a second converter invocation.
+     * The same ID is visible in the pipe, local journal and action marker.
      */
     @SpirePatch(
             cls = "communicationmod.CommunicationMod",
-            method = "publishOnGameStateChange",
+            method = "sendGameState",
             requiredModId = "CommunicationMod",
             optional = true)
     public static class CachePublishedState {
-        @SpirePostfixPatch
-        public static void postfix() {
-            ActionRecorderRuntime.getInstance().cachePublishedFrameSnapshot();
+        @SpireInstrumentPatch
+        public static ExprEditor instrument() {
+            return new ExprEditor() {
+                @Override public void edit(MethodCall call) throws CannotCompileException {
+                    if ("sendMessage".equals(call.getMethodName())) {
+                        call.replace("{ $proceed(actionrecorder.runtime.ActionRecorderRuntime.getInstance()"
+                                + ".capturePublishedState($1)); }");
+                    }
+                }
+            };
         }
     }
 

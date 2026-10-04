@@ -6,4 +6,6 @@ out/
 hs_err_pid*
 logs/
 *.log
-
+__pycache__/
+*.pyc
+datasets/

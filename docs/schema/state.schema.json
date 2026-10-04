@@ -1,14 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://example.invalid/actionrecorder/sts1/state-0.1.schema.json",
-  "title": "StS ActionRecorder canonical state",
+  "$id": "urn:actionrecorder:game-state:0.5",
+  "title": "ActionRecorder 0.5 raw game_state",
   "type": "object",
-  "required": ["state_schema_version", "screen_type", "screen_name", "screen_up", "room_phase", "action_phase", "room_type", "act", "floor", "class", "ascension_level", "current_hp", "max_hp", "gold", "act_boss", "keys", "relics", "potions", "deck", "map", "screen_state", "choices", "combat_state"],
+  "required": ["screen_type", "screen_name", "is_screen_up", "room_phase", "action_phase", "room_type", "act", "floor", "class", "ascension_level", "current_hp", "max_hp", "gold", "act_boss", "keys", "deck", "relics", "potions", "map"],
   "properties": {
-    "state_schema_version": {"type": "string", "const": "0.1"},
     "screen_type": {"type": ["string", "null"]},
     "screen_name": {"type": ["string", "null"]},
-    "screen_up": {"type": ["boolean", "null"]},
+    "is_screen_up": {"type": ["boolean", "null"]},
     "room_phase": {"type": ["string", "null"]},
     "action_phase": {"type": ["string", "null"]},
     "room_type": {"type": ["string", "null"]},
@@ -20,14 +19,22 @@
     "max_hp": {"type": ["integer", "null"]},
     "gold": {"type": ["integer", "null"]},
     "act_boss": {"type": ["string", "null"]},
-    "keys": {"type": ["object", "null"], "properties": {"ruby": {"type": "boolean"}, "emerald": {"type": "boolean"}, "sapphire": {"type": "boolean"}}, "additionalProperties": false},
-    "relics": {"type": "array", "items": {"type": "object"}},
-    "potions": {"type": "array", "items": {"type": "object"}},
-    "deck": {"type": "array", "items": {"type": "object"}},
-    "map": {"type": ["object", "null"]},
-    "screen_state": {"type": "object"},
-    "choices": {"type": "array"},
-    "combat_state": {"type": ["object", "null"]}
+    "keys": {
+      "type": ["object", "null"],
+      "properties": {"ruby": {"type": ["boolean", "null"]}, "emerald": {"type": ["boolean", "null"]}, "sapphire": {"type": ["boolean", "null"]}},
+      "additionalProperties": true
+    },
+    "deck": {"type": ["array", "null"], "items": {"type": "object"}},
+    "relics": {"type": ["array", "null"], "items": {"type": "object"}},
+    "potions": {"type": ["array", "null"], "items": {"type": "object"}},
+    "map": {"type": ["array", "object", "null"]},
+    "screen_state": {"type": ["object", "null"]},
+    "choice_list": {"type": ["array", "null"]},
+    "combat_state": {"type": ["object", "null"]},
+    "seed": false
   },
+  "allOf": [
+    {"if": {"properties": {"screen_type": {"not": {"const": "MAP"}}}}, "then": {"properties": {"map": {"type": "null"}}}}
+  ],
   "additionalProperties": true
 }
