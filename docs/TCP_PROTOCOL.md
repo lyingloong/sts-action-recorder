@@ -1,182 +1,64 @@
-# TCP Protocol
+# TCP 接口（事件协议 0.5）
 
-ActionRecorder 的 TCP 连接现在只传输**语义动作事务标记**。完整的
-`observation_before`/`observation_after` 不由 Mod 自己复制或推断，而由
-CommunicationMod 启动的 `sts_agent.recording.communication_bridge` 从稳定
-状态流中匹配生成。这样可以避免 Java Mod 的游戏线程和 CommunicationMod
-外部进程之间发生状态时序错配。
+ActionRecorder 是单向 TCP 客户端，默认连接接收端 `127.0.0.1:8766`。
+配置方法见 [使用指南](USER_GUIDE.md#采集与输出配置)，事件字段见 [事件格式](EVENT_SCHEMA.md)。
 
-ActionRecorder exposes an optional, one-way TCP event stream. The recorder runs
-inside the game and acts as a TCP client. The recommended consumer is the
-CommunicationMod bridge, which listens on the configured address and also owns
-the authoritative state stream. A standalone consumer may still read the
-markers, but must not treat them as a complete trajectory without matching
-CommunicationMod states.
+## 连接与分帧
 
-## Transport
+接收程序先启动监听，游戏再连接。数据采用 UTF-8，每行一个 JSON 对象，以换行分帧。
+一次 `recv()` 可能只有半行，也可能包含多行，应持续按行读取。
 
-- Transport: TCP.
-- Direction: ActionRecorder -> consumer.
-- Encoding: UTF-8.
-- Framing: newline-delimited JSON (NDJSON/JSONL); one JSON object per line.
-- Default endpoint: `127.0.0.1:8766`.
-- No TLS, authentication, acknowledgement, request, or response protocol is implemented.
-- `action_begin` and `action_accepted` form a transaction. The bridge refuses
-  to emit a trajectory step if its before-state cannot be matched uniquely.
+这是 ActionRecorder 的事件流；CommunicationMod 的外部脚本 stdin/stdout 是另一条接口。
+本通道没有反向游戏命令、ACK 或历史查询。
 
-The consumer should read the stream incrementally. It must not assume that one `recv()` call contains exactly one event; use a buffered line reader and handle partial TCP packets.
-
-## Connection lifecycle
-
-1. The recorder starts its background writer when the Mod is initialized.
-2. It attempts to connect when the first queued event is ready.
-3. On success, it sends one `hello` object followed by a newline.
-4. It sends queued event objects in order.
-5. On connection failure or write failure, it closes the socket and retries after `reconnect_interval_ms`.
-6. A new connection receives a new `hello` object.
-
-The recorder does not block the game update thread while connecting. It also writes every queued event to the local JSONL file regardless of TCP availability.
-
-### Delivery guarantees
-
-The TCP stream is best effort:
-
-- Events are ordered by `event_seq` within one recorder process.
-- Events generated while disconnected are not replayed after reconnect.
-- The local JSONL file is the authoritative complete record.
-- A consumer that needs exactly-once processing should deduplicate using `recorder_session` and `event_seq`.
-- A consumer may receive a `hello` more than once because reconnecting creates a new TCP connection.
-
-## Hello message
-
-Example:
+每次连接成功，首先发送 `hello`：
 
 ```json
-{
-  "schema_version": "0.1",
-  "mod_version": "0.1.0",
-  "recorder_session": "9bd3...",
-  "event_seq": 0,
-  "timestamp_ms": 1780000000000,
-  "type": "hello",
-  "host": "127.0.0.1",
-  "port": 8766
-}
+{"schema_version":"0.5","mod_version":"0.1.1","recorder_session":"session-uuid","event_seq":0,"timestamp_ms":1780000000000,"type":"hello","host":"127.0.0.1","port":8766}
 ```
 
-`host` and `port` identify the configured consumer endpoint, not the ephemeral local client port.
+`hello` 是连接握手，不是新对局，也不写入本地事件日志。随后发送完整状态与动作事件，
+格式与本地 JSONL 一致。接收端应接受未知附加字段，处理所需的已知事件类型。
 
-## Event messages
+## 最小接收端
 
-After `hello`, messages use the common event envelope. The important
-transaction messages are:
-
-```json
-{
-  "schema_version": "0.4",
-  "type": "action_begin",
-  "recorder_session": "9bd3...",
-  "event_seq": 17,
-  "transaction_id": "9bd3...:tx-...",
-  "run_id": "run-...",
-  "expected_screen": "MAP",
-  "context": {"in_game": true, "screen": "MAP", "floor": 2}
-}
-```
-
-```json
-{
-  "schema_version": "0.4",
-  "type": "action_accepted",
-  "recorder_session": "9bd3...",
-  "event_seq": 18,
-  "transaction_id": "9bd3...:tx-...",
-  "run_id": "run-...",
-  "action": {"id": "MAP:x=1:y=0", "kind": "map_node_selected", "x": 1, "y": 0}
-}
-```
-
-If the game rejects or cancels a pending semantic choice, the Mod emits
-`action_rejected` with the same `transaction_id`. A transaction is never
-reconstructed from an unrelated later action.
-
-Envelope fields:
-
-| Field | Meaning |
-| --- | --- |
-| `schema_version` | Event schema version, currently `0.4`. |
-| `mod_version` | ActionRecorder version that emitted the event. |
-| `recorder_session` | Identifier for one running game process/recorder instance. |
-| `capture_mode` | `game_actions`, `raw_input`, or `off`; absent on `hello`. |
-| `event_seq` | Monotonically increasing sequence number for ordinary events. |
-| `timestamp_ms` | Wall-clock Unix timestamp in milliseconds. |
-| `type` | Envelope event type, such as `run_started` or `action_accepted`. |
-| `run_id` | Current game run identifier when a run is active. |
-| `payload` | Event-specific fields, such as `action` or `context`. |
-
-There is no schema negotiation. Consumers should ignore fields they do not need and tolerate additional fields in future schema versions. Complete observations and legal actions come from the CommunicationMod bridge, not from this TCP stream.
-
-## Recommended CommunicationMod bridge
-
-Configure CommunicationMod to start the bridge itself, while ActionRecorder
-points its marker TCP client at the same port:
-
-```properties
-command=<sts-agent-root>/.venv/Scripts/pythonw.exe -m sts_agent.recording.communication_bridge --config <sts-agent-root>/config/agent.json
-runAtGameStart=true
-```
-
-Replace `<sts-agent-root>` with the absolute path to the local sts-agent clone.
-
-The bridge sends `WAIT` after each stable state because it is passive: the
-player performs actions directly in the game. It keeps a bounded state cache,
-assigns monotonic `state_seq` values, validates the expected screen and legal
-action context, and writes `matched`, `ambiguous`, or `unmatched` decisions to
-its `communication-bridge-*.jsonl` diagnostic file. Only matched transactions
-are exported as sts-agent trajectories.
-
-## Minimal server examples
-
-### Python
+Python 3.10+ 标准库即可运行：
 
 ```python
 import json
 import socket
 
-server = socket.create_server(("127.0.0.1", 8766))
-while True:
-    connection, address = server.accept()
-    with connection:
-        with connection.makefile("r", encoding="utf-8", newline="\n") as stream:
-            for line in stream:
-                message = json.loads(line)
-                if message.get("type") == "hello":
-                    print("connected:", address, message["recorder_session"])
-                else:
-                    print(message)
+with socket.create_server(("127.0.0.1", 8766)) as server:
+    while True:
+        connection, address = server.accept()
+        with connection:
+            with connection.makefile("r", encoding="utf-8", newline="\n") as stream:
+                for line in stream:
+                    event = json.loads(line)
+                    print(address, event["type"], event.get("event_seq"))
 ```
 
-### PowerShell diagnostic listener
+该示例适合检查连接。持久消费端还应保存接收事件、检测序号缺口，并在断线后继续 accept。
 
-```powershell
-$listener = [System.Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 8766)
-$listener.Start()
-$client = $listener.AcceptTcpClient()
-$reader = [IO.StreamReader]::new($client.GetStream())
-while ($line = $reader.ReadLine()) { $line }
-```
+## 顺序、身份与状态关联
 
-The PowerShell example is intended for diagnostics, not high-throughput collection.
+- 普通事件按 `(recorder_session, event_seq)` 去重；序号在同一游戏进程内递增。
+- 重连仍使用同一 session，`hello.event_seq=0` 不能参与普通事件的去重和顺序检查。
+- 保存退出再继续依靠 `run_id` 判断是否同一局，不能依靠 TCP 连接身份。
+- `action_begin.before_state_id` 精确引用提交前状态；执行前和结算后的引用见
+  [动作事务](EVENT_SCHEMA.md#动作事务)。
+- 状态 ID 同时出现在 `state_published` 和 CommunicationMod 发出的同一消息中。
+  两条通道延迟不同，消费者应等待引用的 ID，缺失时保留为未知。
+- `action_accepted` 只证明提交被接受；带 `execution_tracking=true` 的动作要另外
+  检查执行事件，才能判断是否实际执行。
 
-## Configuration properties
+## 重连与可靠性
 
-All properties use the `actionrecorder.` prefix:
+连接失败后按照 `reconnect_interval_ms` 限制下一次尝试；重连会再次发送 hello。
+离线事件不会通过 TCP 补发。若网络写入失败，当前消息也不会要求接收端确认或重发。
 
-```text
--Dactionrecorder.host=127.0.0.1
--Dactionrecorder.port=8766
--Dactionrecorder.connect_timeout_ms=250
--Dactionrecorder.reconnect_interval_ms=1000
-```
+本地写盘和 TCP 发送使用不同线程。事件先尝试写盘，再加入 TCP 队列；TCP 队列满或
+发送阻塞不会直接阻塞本地写盘。磁盘错误应检查游戏日志。
 
-The TCP endpoint is intentionally separate from the local event directory and does not change where the complete trace is stored.
+完整轨迹从本地 JSONL 恢复；实时流可能有缺口。当前接口没有认证和 TLS，默认用于
+本机接收；跨机器部署需要由接入方管理网络访问。
