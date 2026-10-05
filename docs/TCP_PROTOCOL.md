@@ -14,7 +14,7 @@ ActionRecorder 是单向 TCP 客户端，默认连接接收端 `127.0.0.1:8766`�
 每次连接成功，首先发送 `hello`：
 
 ```json
-{"schema_version":"0.5","mod_version":"0.1.3","recorder_session":"session-uuid","event_seq":0,"timestamp_ms":1780000000000,"type":"hello","host":"127.0.0.1","port":8766}
+{"schema_version":"0.5","mod_version":"0.1.4","recorder_session":"session-uuid","event_seq":0,"timestamp_ms":1780000000000,"type":"hello","host":"127.0.0.1","port":8766}
 ```
 
 `hello` 是连接握手，不是新对局，也不写入本地事件日志。随后发送完整状态与动作事件，

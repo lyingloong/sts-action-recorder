@@ -2,6 +2,7 @@ package actionrecorder.patches;
 
 import actionrecorder.runtime.ActionRecorderRuntime;
 import actionrecorder.runtime.RuntimeStateFields;
+import actionrecorder.runtime.RuntimeDescriptions;
 import actionrecorder.runtime.MatchGameState;
 import com.evacipated.cardcrawl.modthespire.lib.SpirePatch;
 import com.evacipated.cardcrawl.modthespire.lib.SpirePostfixPatch;
@@ -19,6 +20,12 @@ import java.lang.reflect.Method;
 import java.util.HashMap;
 import com.megacrit.cardcrawl.cards.AbstractCard;
 import com.megacrit.cardcrawl.characters.AbstractPlayer;
+import com.megacrit.cardcrawl.core.AbstractCreature;
+import com.megacrit.cardcrawl.potions.AbstractPotion;
+import com.megacrit.cardcrawl.relics.AbstractRelic;
+import com.megacrit.cardcrawl.powers.AbstractPower;
+import java.util.ArrayList;
+import java.util.Map;
 
 /**
  * Adds fields that the optional CommunicationMod converter does not expose.
@@ -78,9 +85,50 @@ public final class CommunicationStatePatches {
             __result.put("base_cost", card.cost);
             __result.put("cost_for_turn", card.costForTurn);
             __result.put("target", card.target.name());
-            __result.put("raw_description", card.rawDescription);
+            RuntimeDescriptions.addCard(__result, card);
             __result.put("color", card.color.name());
             RuntimeStateFields.addCardFlags(__result, card);
+            return __result;
+        }
+    }
+
+    @SpirePatch(cls = "communicationmod.GameStateConverter", method = "convertRelicToJson",
+            paramtypez = {AbstractRelic.class}, requiredModId = "CommunicationMod", optional = true)
+    public static class RelicDescription {
+        @SpirePostfixPatch public static HashMap<String, Object> postfix(
+                HashMap<String, Object> __result, AbstractRelic relic) {
+            if (__result != null && relic != null) RuntimeDescriptions.addText(__result, relic.description);
+            return __result;
+        }
+    }
+
+    @SpirePatch(cls = "communicationmod.GameStateConverter", method = "convertPotionToJson",
+            paramtypez = {AbstractPotion.class}, requiredModId = "CommunicationMod", optional = true)
+    public static class PotionDescription {
+        @SpirePostfixPatch public static HashMap<String, Object> postfix(
+                HashMap<String, Object> __result, AbstractPotion potion) {
+            if (__result != null && potion != null) RuntimeDescriptions.addPotion(__result, potion);
+            return __result;
+        }
+    }
+
+    @SpirePatch(cls = "communicationmod.GameStateConverter", method = "convertCreaturePowersToJson",
+            paramtypez = {AbstractCreature.class}, requiredModId = "CommunicationMod", optional = true)
+    public static class PowerDescriptions {
+        @SuppressWarnings("unchecked")
+        @SpirePostfixPatch public static ArrayList<Object> postfix(
+                ArrayList<Object> __result, AbstractCreature creature) {
+            if (__result == null || creature == null || creature.powers == null) return __result;
+            for (Object entry : __result) {
+                if (!(entry instanceof Map)) continue;
+                Map<String, Object> value = (Map<String, Object>) entry;
+                for (AbstractPower power : creature.powers) {
+                    if (power != null && power.ID != null && power.ID.equals(value.get("id"))) {
+                        RuntimeDescriptions.addText(value, power.description);
+                        break;
+                    }
+                }
+            }
             return __result;
         }
     }

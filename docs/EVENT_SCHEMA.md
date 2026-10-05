@@ -8,7 +8,7 @@
 普通事件使用以下 envelope，具体事件增加各自字段：
 
 ```json
-{"schema_version":"0.5","mod_version":"0.1.3","recorder_session":"session-uuid","capture_mode":"game_actions","event_seq":12,"timestamp_ms":1780000000000,"run_id":"run-uuid","type":"action_begin"}
+{"schema_version":"0.5","mod_version":"0.1.4","recorder_session":"session-uuid","capture_mode":"game_actions","event_seq":12,"timestamp_ms":1780000000000,"run_id":"run-uuid","type":"action_begin"}
 ```
 
 | 字段 | 含义 |

@@ -11,6 +11,7 @@ CARD_FLAGS = ("retain", "self_retain", "free_to_play_once", "is_cost_modified",
               "in_bottle_flame", "in_bottle_lightning", "in_bottle_tornado")
 PLAYER_COUNTERS = ("base_energy_per_turn", "energy_per_turn", "master_hand_size",
                    "game_hand_size", "cards_played_this_turn")
+ENTITY_DESCRIPTION_FIELDS = ("raw_description", "description", "description_source")
 
 
 def _mod_at_least(version, minimum) -> bool:
@@ -20,18 +21,42 @@ def _mod_at_least(version, minimum) -> bool:
         return False
 
 
-def _audit_runtime_fields(state: dict, label: str, errors: list, warnings: list) -> None:
-    """Check the additive 0.1.2 fields; old journals remain auditable."""
+def _audit_runtime_fields(state: dict, label: str, errors: list, warnings: list,
+                          mod_version: str | None = None) -> None:
+    """Check versioned runtime fields; old journals remain auditable."""
     def fields(value, names, value_type, location):
         for name in names:
             if name not in value:
                 warnings.append(f"{label}: {location} missing {name}")
-            elif value[name] is not None and type(value[name]) is not value_type:
+            elif value_type is not object and value[name] is not None and type(value[name]) is not value_type:
                 errors.append(f"{label}: {location}.{name} has invalid type")
+
+    check_descriptions = _mod_at_least(mod_version, (0, 1, 4))
 
     def card(value, location):
         if isinstance(value, dict):
             fields(value, CARD_FLAGS, bool, location)
+            if check_descriptions:
+                fields(value, ("raw_description", "description", "description_source"), str, location)
+                fields(value, ("description_complete",), bool, location)
+                fields(value, ("unresolved_description_variables", "multi_damage"), list, location)
+                if isinstance(value.get("description_source"), str) and value["description_source"] != "game_runtime":
+                    errors.append(f"{label}: {location}.description_source must be game_runtime")
+
+    def entities(container, name, location, expected_fields):
+        values = container.get(name)
+        if not isinstance(values, list):
+            return
+        for index, value in enumerate(values):
+            if not isinstance(value, dict):
+                continue
+            item_location = f"{location}.{name}[{index}]"
+            fields(value, tuple(expected_fields), object, item_location)
+            for field_name, field_type in expected_fields.items():
+                if field_name in value and value[field_name] is not None and type(value[field_name]) is not field_type:
+                    errors.append(f"{label}: {item_location}.{field_name} has invalid type")
+            if isinstance(value.get("description_source"), str) and value["description_source"] != "game_runtime":
+                errors.append(f"{label}: {item_location}.description_source must be game_runtime")
 
     def cards(container, names, location):
         for name in names:
@@ -41,10 +66,25 @@ def _audit_runtime_fields(state: dict, label: str, errors: list, warnings: list)
                     card(value, f"{location}.{name}[{index}]")
 
     cards(state, ("deck",), "game_state")
+    if check_descriptions:
+        entities(state, "relics", "game_state", {field: str for field in ENTITY_DESCRIPTION_FIELDS})
+        entities(state, "potions", "game_state",
+                 {"raw_description": str, "description": str, "description_source": str,
+                  "target": bool, "tooltips": list})
     combat = state.get("combat_state")
     if isinstance(combat, dict):
         cards(combat, ("hand", "draw_pile", "discard_pile", "exhaust_pile", "limbo"), "combat_state")
         card(combat.get("card_in_play"), "combat_state.card_in_play")
+        if check_descriptions:
+            player_powers = (combat.get("player") or {}).get("powers") if isinstance(combat.get("player"), dict) else None
+            entities({"powers": player_powers}, "powers", "combat_state.player",
+                     {field: str for field in ENTITY_DESCRIPTION_FIELDS})
+            monsters = combat.get("monsters")
+            if isinstance(monsters, list):
+                for index, monster in enumerate(monsters):
+                    if isinstance(monster, dict):
+                        entities(monster, "powers", f"combat_state.monsters[{index}]",
+                                 {field: str for field in ENTITY_DESCRIPTION_FIELDS})
         player = combat.get("player")
         if isinstance(player, dict):
             fields(player, PLAYER_COUNTERS, int, "combat_state.player")
@@ -152,7 +192,7 @@ def audit(path: Path) -> dict:
                         if required not in state:
                             warnings.append(f"line {line_number}: state missing {required}")
                     if _mod_at_least(event.get("mod_version"), (0, 1, 2)):
-                        _audit_runtime_fields(state, f"line {line_number}", errors, warnings)
+                        _audit_runtime_fields(state, f"line {line_number}", errors, warnings, event.get("mod_version"))
                     if state.get("room_phase") == "COMBAT" and state.get("screen_type") == "NONE":
                         combat = state.get("combat_state")
                         if not isinstance(combat, dict) or any(field not in combat for field in ("hand", "player", "monsters")):

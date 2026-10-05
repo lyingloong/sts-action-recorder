@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:actionrecorder:game-state:0.5",
-  "title": "ActionRecorder 0.5 raw game_state",
+  "title": "ActionRecorder 0.5 raw game_state (Mod 0.1.4)",
   "type": "object",
   "required": ["screen_type", "screen_name", "is_screen_up", "room_phase", "action_phase", "room_type", "act", "floor", "class", "ascension_level", "current_hp", "max_hp", "gold", "act_boss", "keys", "deck", "relics", "potions", "map"],
   "properties": {
@@ -25,8 +25,8 @@
       "additionalProperties": true
     },
     "deck": {"type": ["array", "null"], "items": {"$ref": "#/$defs/card"}},
-    "relics": {"type": ["array", "null"], "items": {"type": "object"}},
-    "potions": {"type": ["array", "null"], "items": {"type": "object"}},
+    "relics": {"type": ["array", "null"], "items": {"$ref": "#/$defs/describedEntity"}},
+    "potions": {"type": ["array", "null"], "items": {"$ref": "#/$defs/potion"}},
     "map": {"type": ["array", "object", "null"]},
     "screen_state": {
       "type": ["object", "null"],
@@ -44,6 +44,14 @@
       "type": ["object", "null"],
       "properties": {
         "player": {"$ref": "#/$defs/player"},
+        "monsters": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "properties": {"powers": {"type": ["array", "null"], "items": {"$ref": "#/$defs/describedEntity"}}},
+            "additionalProperties": true
+          }
+        },
         "hand": {"$ref": "#/$defs/cards"},
         "draw_pile": {"$ref": "#/$defs/cards"},
         "discard_pile": {"$ref": "#/$defs/cards"},
@@ -62,8 +70,14 @@
     "cards": {"type": ["array", "null"], "items": {"$ref": "#/$defs/card"}},
     "card": {
       "type": "object",
-      "description": "Mod 0.1.2 fields are optional here for older protocol-0.5 journals; audit_trace checks their presence by mod_version.",
+      "description": "Runtime card object. Added fields remain optional for older protocol-0.5 journals; audit_trace checks version-specific presence.",
       "properties": {
+        "raw_description": {"type": ["string", "null"]},
+        "description": {"type": ["string", "null"]},
+        "description_source": {"type": ["string", "null"]},
+        "description_complete": {"type": ["boolean", "null"]},
+        "unresolved_description_variables": {"type": ["array", "null"], "items": {"type": "string"}},
+        "multi_damage": {"type": ["array", "null"], "items": {"type": ["integer", "null"]}},
         "retain": {"type": ["boolean", "null"]},
         "self_retain": {"type": ["boolean", "null"]},
         "free_to_play_once": {"type": ["boolean", "null"]},
@@ -78,9 +92,37 @@
       },
       "additionalProperties": true
     },
+    "describedEntity": {
+      "type": "object",
+      "properties": {
+        "raw_description": {"type": ["string", "null"]},
+        "description": {"type": ["string", "null"]},
+        "description_source": {"type": ["string", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "potion": {
+      "type": "object",
+      "properties": {
+        "raw_description": {"type": ["string", "null"]},
+        "description": {"type": ["string", "null"]},
+        "description_source": {"type": ["string", "null"]},
+        "target": {"type": ["boolean", "null"]},
+        "tooltips": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "object",
+            "properties": {"header": {"type": ["string", "null"]}, "body": {"type": ["string", "null"]}},
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
     "player": {
       "type": ["object", "null"],
       "properties": {
+        "powers": {"type": ["array", "null"], "items": {"$ref": "#/$defs/describedEntity"}},
         "base_energy_per_turn": {"type": ["integer", "null"]},
         "energy_per_turn": {"type": ["integer", "null"]},
         "master_hand_size": {"type": ["integer", "null"]},

@@ -39,7 +39,7 @@ import java.util.concurrent.TimeUnit;
  */
 public final class ActionRecorderRuntime {
     private static final ActionRecorderRuntime INSTANCE = new ActionRecorderRuntime();
-    private static final String MOD_VERSION = "0.1.3";
+    private static final String MOD_VERSION = "0.1.4";
     private static final String SCHEMA_VERSION = "0.5";
 
     private final String host;

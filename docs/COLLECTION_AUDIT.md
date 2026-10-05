@@ -68,6 +68,9 @@ python tools/audit_trace.py "C:/path/to/game/data/actionrecorder/run-example.jso
     锻造/删牌预览确认动作的 selected_cards 包含当前目标牌，且与前状态 confirmation_card 一致。
 12. 双重打击等自动重放不记作玩家出牌；原攻击的 after_state 应在自动重放结束后。
     单次选牌/确认不再因为鼠标按下阶段多出 game_rejected_or_cancelled 事务。
+13. Mod 0.1.4 起，状态中的卡牌保留原始描述和运行时展开描述；遗物、药水、Power 有游戏对象
+    提供的描述时应带 `description_source=game_runtime`。检查药水 tooltip 不丢失，未解析卡牌变量
+    出现在 `unresolved_description_variables`，不得被静态文本悄悄替换。
 
 字段细节见 [事件格式](EVENT_SCHEMA.md) 和 [状态契约](STATE_SCHEMA.md)。
 

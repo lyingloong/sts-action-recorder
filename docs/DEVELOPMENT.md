@@ -76,6 +76,7 @@ $patchClasspath = "target/classes;target/test-classes;$gameJar;$baseModJar;$mtsJ
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.PatchInstrumentationSmoke
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.QueuedDecisionTrackerSmoke
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.RuntimeStateFieldsSmoke
+& "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.RuntimeDescriptionsSmoke
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.CommunicationSerializationSmoke
 ```
 
@@ -88,6 +89,8 @@ QueuedDecisionTrackerSmoke 检查对象身份、执行/取消和重置。Runtime
 CommunicationSerializationSmoke 使用实际 CommunicationMod 的 shaded Gson 执行 serializer
 补丁，验证中立姿态名称、隐藏牌面和未知字段的 null 穿过序列化与 JSON 树保存边界。
 队列测试覆盖自动连锁、下一项人类操作和结束回合等待；字段测试包含单卡预览/多选确认。
+描述测试检查牌组中尚未初始化的数值回退到游戏对象的基础值、战斗内零值不被覆盖，
+以及未知数值保持不可用和游戏文本格式的清理。
 
 ## 采集实现
 

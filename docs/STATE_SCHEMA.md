@@ -68,7 +68,12 @@ message 保留 CommunicationMod 原始 envelope：
 | HAND_SELECT screen_state | selection_reason、up_to、any_number、for_upgrade、for_transform |
 | GRID screen_state | selection_reason、confirm_screen_up、any_number、for_clarity、confirmation_card（ID/名称/UUID） |
 
-卡牌数据来自运行时对象，raw_description 是游戏原文。damage/block 等依赖游戏最近一次
+卡牌数据来自运行时对象。0.1.4 起，`description` 将原始卡牌说明中的 BaseMod 动态变量
+按当前卡牌对象的值展开；`raw_description` 保留带占位符的游戏原文。字段
+`description_source="game_runtime"` 标记来源，`description_complete` 表示是否仍有未解析变量，
+`unresolved_description_variables` 列出未解析的变量名，`multi_damage` 保留当前缓存数组。
+遗物和 Power 的 `description` 取当前游戏对象；药水的 `description` 合并对象描述和 tooltip 正文，
+并保留 `tooltips`、`raw_description`、`target`。这些字段不从下游知识库补造。damage/block 等依赖游戏最近一次
 计算，可能尚未包含所有目标相关和特殊效果修正，不能一律解释为最终生效值。
 选择场景已有的源字段，例如 for_purge、num_cards，照常保留。
 
@@ -153,6 +158,11 @@ Mod 0.1.3 起，源序列化器启用 serializeNulls，保留嵌套对象/Map �
 
 ## 动作后状态
 
+动作后状态保留为可追溯的运行时快照，**不能默认视为该动作完整结算后的结果**。
+动画期间玩家可以继续操作；钥匙到账、卡牌效果、奖励入栏等逻辑更新可能延迟，多个动作的
+效果也可能交错。因此后状态中仍可能保留动作前的数值，或包含其他操作的影响。这是后状态
+使用上的已知局限，不应仅凭字段存在推断动作失败、奖励未获得或结算已经完成。
+
 执行跟踪的 action_effects_settled 可以显式引用逻辑结算后的状态。普通动作没有统一的
 显式后状态事件；通用提取器在没有明确引用时保持 observation_after=null。
 
@@ -174,5 +184,5 @@ ready 本身不保证所有效果已完成，下一次点击也可能发生在�
 事件协议、Mod 版本和代码 commit 一同记录便于复现。新增源字段允许保留；版本更新后
 按 [采集验收](COLLECTION_AUDIT.md) 检查状态和动作关联。
 
-Mod 0.1.2 在协议 0.5 中增补上述字段。Schema 定义其类型但允许旧记录缺失；audit_trace
-按事件的 mod_version 检查 0.1.2 及以后记录的字段存在性、类型和翻牌隐藏信息边界。
+Mod 0.1.2/0.1.3/0.1.4 在协议 0.5 中增补上述字段。Schema 定义其类型但允许旧记录缺失；
+audit_trace 按事件的 mod_version 检查对应版本字段的存在性、类型和翻牌隐藏信息边界。
