@@ -25,8 +25,17 @@
 去重使用 `(recorder_session,event_seq)`；事件顺序和动作关联分别由序号和显式 ID 确定。
 TCP hello 的 event_seq=0 是握手，见 [TCP 接口](TCP_PROTOCOL.md)。
 
-run_id 通过 BaseMod 保存字段跨保存/继续恢复。一次 run_started 不一定意味着新局：
-继续存档可以再次发布相同 run_id。原始种子在对局元数据中是有符号 long 的字符串。
+run_id 通过 BaseMod 保存字段跨保存/继续恢复。0.1.5 起新局发布 run_started，继续存档
+发布 run_resumed，保留原 run_id 和文件名；较早版本的继续可能再次发布 run_started。
+每次开始/读档分配新的 segment_id，普通局内事件携带该字段。原始种子在生命周期元数据中
+是有符号 long 的字符串；读档从 SaveFile.seed 恢复，不使用加载中的临时 Settings.seed。
+
+run_checkpoint 包含 checkpoint_id 和 checkpoint_state_id；同一标识写入 BaseMod 存档。
+run_resumed 包含完整角色/进阶/种子、checkpoint_id、checkpoint_segment_id、
+checkpoint_state_id 和当前 context。checkpoint_state_id 仅指保存时最后发布的观察，
+不保证等同于游戏存档实际恢复的状态。早期存档可能没有 checkpoint 信息，此时为 null。
+没有 Recorder 身份的存档创建新的中途记录，recording_started_mid_run=true，不猜测所属旧局。
+加载完成前不发布局内记录；保存退出是 terminal=false，读档不是新局或胜利。
 
 ## 状态事件
 
@@ -95,6 +104,8 @@ Mod 0.1.3 起，双重打击等队首自动重放链处理完后才关闭前一�
 | type | 主要字段与含义 |
 | --- | --- |
 | run_started | character、ascension、seed、act、run_id；包含对局元数据 |
+| run_resumed（0.1.5 起） | 原 run_id、完整元数据、新 segment_id、存档 checkpoint 引用；明确的历史/状态回滚边界 |
+| run_checkpoint（0.1.5 起） | 写入存档的 checkpoint_id、最后发布的 checkpoint_state_id |
 | run_finished | reason=death/victory、terminal=true、context；进入整局终局 |
 | run_ended | reason、terminal；离开地牢，保存退出可能 terminal=false |
 | room_changed | 房间类、幕/层，用于时间线 |
@@ -132,6 +143,19 @@ Mod 0.1.3 起，双重打击等队首自动重放链处理完后才关闭前一�
 PLAY 描述中的手牌序号从 1 起；hand_index、target_index、slot、CHOOSE index 从 0 起。
 实体身份和目标应读取结构化参数，不只解析本地化标签。特殊选择无法用某个通用 CHOOSE
 重放时，原始记录仍保留；可重放动作空间由消费者构建。
+
+### 奖励身份（Mod 0.1.5 起）
+
+每份金币、药水、遗物、卡牌、钥匙奖励对象提供 reward_id；Boss 遗物候选也有各自的
+reward_id。这是 Recorder 分配的对象身份，不是实体类型 ID。相同内容的不同奖励 ID 不同，
+同一对象跳过再打开 ID 不变；读档重建对象后 ID 可以变化，不承诺跨读档奖励 ID 相同。
+
+奖励领取动作携带 reward_id、reward_index（动作前列表的零基下标）和 linked_reward_id。
+奖励状态使用同样的字段；钥匙/遗物二选一的关联来自实际 relicLink，不按内容推断。
+Boss 遗物动作携带 reward_id、reward_index。卡牌奖励选牌、跳过、颂钵操作和其界面
+携带 source_reward_id；药水/卡牌生成的独立选牌没有来源奖励时为 null。
+列表重排会改变 reward_index，但不改变已有对象 reward_id。下游应在引用的动作前状态中
+校验 ID/下标/类型，再映射 CHOOSE n；不能只按“card”或实体名称匹配。
 
 Mod 0.1.3 起，单张升级/删除/转化的预览确认从实际 hoveredCard 读取目标，保存到
 确认动作 selected_cards；多选确认保存当前 selectedCards 的副本，合法零张选择保留 []。

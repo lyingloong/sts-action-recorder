@@ -78,6 +78,8 @@ $patchClasspath = "target/classes;target/test-classes;$gameJar;$baseModJar;$mtsJ
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.RuntimeStateFieldsSmoke
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.RuntimeDescriptionsSmoke
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.CommunicationSerializationSmoke
+& "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.JournalIdentitySmoke
+& "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.runtime.CommunicationSnapshotSmoke
 ```
 
 PatchBindingSmoke 使用 ModTheSpire 参数绑定逻辑检查 prefix/postfix，包括历史错误签名的
@@ -98,6 +100,10 @@ CommunicationSerializationSmoke 使用实际 CommunicationMod 的 shaded Gson �
 状态补丁给实际 JSON 编号并保存 state_published，action_begin 引用该结果。
 游戏接受动作后记录 action_accepted，未接受则记录 action_rejected。
 
+主动采集发布附带 recorder_snapshot_only=true 和边界类型；自然 CM 发布为 false。
+脚本执行端必须忽略只读快照的 ready_for_command，不将其作为命令完成通知；
+记录消费者仍保存它们。CommunicationSnapshotSmoke 验证三种边界、嵌套调用及异常后复原。
+
 游戏线程构造事件并入队。写盘线程追加并 flush 本地文件，再把副本交给独立 TCP 线程。
 状态转换仍在游戏线程执行；PostUpdate 的生命周期/队列检查不做每帧完整状态序列化。
 
@@ -107,6 +113,11 @@ skipped/cancelled。执行和结算边界的公开字段见 [事件格式](EVENT
 
 run_id 和角色/进阶/种子指纹存入 BaseMod savefield。继续同一存档追加原文件；
 跨幕暂时清空地牢字段不会结束对局，真实终局由 VictoryScreen/DeathScreen 入口记录。
+0.1.5 的 SaveLoadPatches 在 loadPlayerSave 入口建立加载屏障，等待 BaseMod onLoadRaw
+和游戏初始化完成后恢复保存的 RunIdentity；不会根据临时 act=0/seed=null 生成新身份。
+RunIdentity 保存文件名和 checkpoint，RewardIdentity 用对象身份而非内容分配奖励 UUID。
+新开同种子的另一局仍获得新 run_id。JournalIdentitySmoke 覆盖这些身份规则和加载就绪条件；
+仍需实机验证保存退出、重启继续及 post-combat 存档恢复。
 
 ## 扩展动作
 

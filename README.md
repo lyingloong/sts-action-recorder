@@ -4,7 +4,7 @@
 并通过每局 JSONL 文件和可选的 TCP 流提供数据。推荐与
 [CommunicationMod](https://github.com/ForgottenArbiter/CommunicationMod) 一起使用，记录完整游戏状态。
 
-当前 Mod 版本 **0.1.4**，事件协议 **0.5**。Java 8、ModTheSpire 和 BaseMod 为运行依赖；
+当前 Mod 版本 **0.1.5**，事件协议 **0.5**。Java 8、ModTheSpire 和 BaseMod 为运行依赖；
 离线工具使用 Python 3.10+ 标准库。
 
 ## 快速开始
@@ -15,6 +15,8 @@
 4. 在游戏工作目录的 `data/actionrecorder/` 查看记录。
 
 每局游戏一个文件；保存退出再继续会追加到原文件。TCP 接收端未启动时照常本地保存。
+读档追加 `run_resumed` 和新的 `segment_id`，保留回滚前的操作；消费者不应跨读档片段
+拼接动作历史或状态转移。每份奖励提供 `reward_id` 和当前 `reward_index`，可区分同名奖励。
 首次采集建议打开 Mod 设置中的动作提示，并按 [验收清单](docs/COLLECTION_AUDIT.md) 检查记录。
 完整安装与配置见 [使用指南](docs/USER_GUIDE.md)；自行构建见 [开发指南](docs/DEVELOPMENT.md)。
 

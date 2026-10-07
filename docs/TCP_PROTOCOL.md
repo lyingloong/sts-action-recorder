@@ -45,6 +45,8 @@ with socket.create_server(("127.0.0.1", 8766)) as server:
 - 普通事件按 `(recorder_session, event_seq)` 去重；序号在同一游戏进程内递增。
 - 重连仍使用同一 session，`hello.event_seq=0` 不能参与普通事件的去重和顺序检查。
 - 保存退出再继续依靠 `run_id` 判断是否同一局，不能依靠 TCP 连接身份。
+- Mod 0.1.5 的 `run_resumed` 是历史/状态回滚边界；消费者应清理上一片段未完成关联，
+  不将新片段状态配给旧动作。相同 run_id 不表示相邻事件必然构成连续状态转移。
 - `action_begin.before_state_id` 精确引用提交前状态；执行前和结算后的引用见
   [动作事务](EVENT_SCHEMA.md#动作事务)。
 - 状态 ID 同时出现在 `state_published` 和 CommunicationMod 发出的同一消息中。

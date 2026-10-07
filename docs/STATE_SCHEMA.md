@@ -14,6 +14,15 @@ CommunicationMod 自身后续发布的状态也经过同一链路。
 - recorder_state_id：状态 ID，与事件外层 state_id 相同。
 - recorder_state_seq：状态序号，与外层 state_seq 相同。
 - recorder_session：记录会话身份。
+- recorder_segment_id（0.1.5 起）：当前开始/读档片段，与事件外层 segment_id 对应；无活动片段时为 null。
+- recorder_snapshot_only：Recorder 主动请求的采集快照为 true；CommunicationMod 正常发布为 false。
+- recorder_snapshot_kind：仅采集快照包含，取 action_before、execution_before 或 effects_settled。
+
+采集快照复用同一脚本管道，但不是命令应答，也不是让控制器提交下一动作的通知。
+其 ready_for_command 保留 CommunicationMod 原值，可能仍为 true；执行端必须先检查
+recorder_snapshot_only，不能用此类消息确认待执行命令或触发下一次决策。
+记录端应照常保存这些快照及状态 ID，供动作前/执行前/结算状态的精确关联使用。
+此标记在同步发布调用期间生效，并在成功或异常后恢复，不改变正常 CM 更新时机。
 
 每次动作入口可以产生新状态；不按固定毫秒或每帧序列化完整状态。排队动作在处理前与
 效果结算边界另行发布，见 [提交与执行](EVENT_SCHEMA.md#排队动作的提交与执行)。
@@ -67,6 +76,9 @@ message 保留 CommunicationMod 原始 envelope：
 | Match and Keep! screen_state（0.1.2 起） | match_game：阶段、剩余尝试、配对数、公开棋盘和当前选中位置 |
 | HAND_SELECT screen_state | selection_reason、up_to、any_number、for_upgrade、for_transform |
 | GRID screen_state | selection_reason、confirm_screen_up、any_number、for_clarity、confirmation_card（ID/名称/UUID） |
+| COMBAT_REWARD screen_state.rewards（0.1.5 起） | reward_id、reward_index、linked_reward_id；只标识当前奖励对象，不提前暴露未打开的卡牌内容 |
+| CARD_REWARD screen_state（0.1.5 起） | source_reward_id；无 RewardItem 来源的独立选牌为 null |
+| BOSS_REWARD screen_state.relics（0.1.5 起） | 每个候选遗物的 reward_id、reward_index |
 
 卡牌数据来自运行时对象。0.1.4 起，`description` 将原始卡牌说明中的 BaseMod 动态变量
 按当前卡牌对象的值展开；`raw_description` 保留带占位符的游戏原文。字段

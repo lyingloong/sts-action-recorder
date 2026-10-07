@@ -99,6 +99,19 @@ def _audit_runtime_fields(state: dict, label: str, errors: list, warnings: list,
     screen = state.get("screen_state")
     if not isinstance(screen, dict):
         return
+    if _mod_at_least(mod_version, (0, 1, 5)):
+        seen_rewards = set()
+        reward_fields = {"COMBAT_REWARD": ("rewards",), "BOSS_REWARD": ("relics",)}.get(state.get("screen_type"), ())
+        for name in reward_fields:
+            for index, reward in enumerate(screen.get(name) or []):
+                if not isinstance(reward, dict):
+                    continue
+                identifier = reward.get("reward_id")
+                if not isinstance(identifier, str) or identifier in seen_rewards:
+                    errors.append(f"{label}: missing/duplicate {name}[{index}].reward_id")
+                seen_rewards.add(identifier)
+                if reward.get("reward_index") != index:
+                    errors.append(f"{label}: {name}[{index}].reward_index mismatch")
     cards(screen, ("cards", "hand", "selected", "selected_cards"), "screen_state")
     if screen.get("event_id") != "Match and Keep!" and "match_game" not in screen:
         return
@@ -180,6 +193,8 @@ def audit(path: Path) -> dict:
                     errors.append(f"line {line_number}: duplicate state ID {identifier}")
                 if message.get("recorder_state_id") != identifier:
                     errors.append(f"line {line_number}: inconsistent state ID")
+                if event.get("segment_id") is not None and message.get("recorder_segment_id") != event["segment_id"]:
+                    errors.append(f"line {line_number}: inconsistent state segment")
                 states[identifier] = message
                 state = message.get("game_state") or {}
                 screens[str(state.get("screen_type"))] += 1
@@ -207,6 +222,8 @@ def audit(path: Path) -> dict:
                 else:
                     state = states[identifier].get("game_state") or {}
                     context = event.get("context") or {}
+                    if event.get("segment_id") is not None and states[identifier].get("recorder_segment_id") != event["segment_id"]:
+                        errors.append(f"line {line_number}: pre-state segment mismatch")
                     for key in ("act", "floor"):
                         if context.get(key) is not None and context[key] != state.get(key):
                             errors.append(f"line {line_number}: pre-state {key} mismatch")
@@ -218,6 +235,17 @@ def audit(path: Path) -> dict:
                     errors.append(f"line {line_number}: missing action ID/kind")
                 if action.get("autoplay"):
                     errors.append(f"line {line_number}: automated card play included")
+                before = states.get((begins.get(tx) or {}).get("before_state_id")) or {}
+                screen = (before.get("game_state") or {}).get("screen_state") or {}
+                if action.get("reward_id") is not None:
+                    rewards = screen.get("rewards", screen.get("relics", [])) or []
+                    index = action.get("reward_index")
+                    if (type(index) is not int or not 0 <= index < len(rewards)
+                            or rewards[index].get("reward_id") != action["reward_id"]):
+                        errors.append(f"line {line_number}: action reward identity/index mismatch")
+                if (action.get("source_reward_id") is not None
+                        and action["source_reward_id"] != screen.get("source_reward_id")):
+                    errors.append(f"line {line_number}: action source reward mismatch")
                 if (_mod_at_least(event.get("mod_version"), (0, 1, 3))
                         and action.get("kind") == "card_selection_confirmed"):
                     begin = begins.get(tx) or {}
@@ -264,6 +292,9 @@ def audit(path: Path) -> dict:
                         errors.append(f"line {line_number}: executed without execution begin")
                 elif event.get("after_state_id") not in states:
                     errors.append(f"line {line_number}: settled state reference absent")
+            elif kind in {"run_started", "run_resumed"} and _mod_at_least(event.get("mod_version"), (0, 1, 5)):
+                if event.get("act", 0) < 1 or event.get("seed") in {None, "null", "None"}:
+                    errors.append(f"line {line_number}: run initialized with unavailable act/seed")
             elif kind in {"run_finished", "run_ended"}:
                 outcomes.append({"type": kind, "reason": event.get("reason"), "terminal": event.get("terminal")})
     if len(run_ids) > 1:

@@ -46,6 +46,24 @@ class DatasetExtractionTests(unittest.TestCase):
         rows = journal()[:-1] + [{"type": "run_ended", "terminal": False, "reason": "save_and_quit"}]
         self.assertEqual(module.run_metadata(rows)["outcome"], "incomplete")
 
+    def test_resume_keeps_metadata_and_explicit_segments(self):
+        rows = journal()
+        rows[0]["segment_id"] = "a"
+        rows[1]["message"]["recorder_segment_id"] = "a"
+        rows[2]["segment_id"] = "a"
+        rows += [rows[0] | {"type": "run_resumed", "segment_id": "b", "checkpoint_id": "cp"}]
+        meta = module.run_metadata(rows)
+        self.assertEqual(meta["seed"], "-123")
+        self.assertEqual(meta["segments"][1]["checkpoint_id"], "cp")
+        self.assertEqual(module.extract_steps(rows)[0]["segment_id"], "a")
+        rows[2]["segment_id"] = "b"
+        self.assertIn("before_segment_mismatch", module.extract_steps(rows)[0]["quality_flags"])
+
+    def test_recording_started_from_resume_has_real_metadata(self):
+        rows = journal()
+        rows[0]["type"] = "run_resumed"
+        self.assertEqual(module.run_metadata(rows)["character"], "IRONCLAD")
+
     def test_missing_state_retains_action(self):
         steps = module.extract_steps([e for e in journal() if e["type"] != "state_published"])
         self.assertEqual(len(steps), 2)

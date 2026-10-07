@@ -116,22 +116,27 @@ public final class DecisionPatches {
 
     @SpirePatch(clz = CardRewardScreen.class, method = "acquireCard")
     public static class CardRewardSelection {
+        private static String sourceDetails;
+        private static int selectedIndex;
         @SpirePrefixPatch
-        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
+        public static void prefix(CardRewardScreen __instance, AbstractCard card) {
+            sourceDetails = ActionRecorderRuntime.getInstance().cardRewardSourceDetails();
+            selectedIndex = __instance == null || __instance.rewardGroup == null ? -1 : __instance.rewardGroup.indexOf(card);
+            ActionRecorderRuntime.getInstance().beginDecision();
+        }
         @SpirePostfixPatch
         public static void postfix(CardRewardScreen __instance, AbstractCard card) {
             if (card == null) {
                 ActionRecorderRuntime.getInstance().discardDecision();
                 return;
             }
-            int index = __instance == null || __instance.rewardGroup == null
-                    ? -1 : __instance.rewardGroup.indexOf(card);
+            int index = selectedIndex;
             ActionRecorderRuntime.getInstance().recordAction(
                     index < 0 ? "CHOOSE:card_id=" + card.cardID : "CHOOSE:index=" + index,
                     "card_reward_selected",
                     "\"card_id\":" + quote(card.cardID)
                             + ",\"card_name\":" + quote(card.name)
-                            + ",\"card_uuid\":" + quote(String.valueOf(card.uuid)));
+                            + ",\"card_uuid\":" + quote(String.valueOf(card.uuid)) + sourceDetails);
         }
     }
 
@@ -453,7 +458,11 @@ public final class DecisionPatches {
             String type = __instance.type.name().toLowerCase();
             String id = "REWARD:TAKE:" + __instance.type.name();
             String details = "\"reward_type\":" + quote(__instance.type.name())
-                    + ",\"gold\":" + __instance.goldAmt;
+                    + ",\"gold\":" + __instance.goldAmt
+                    + ",\"reward_id\":" + quote(ActionRecorderRuntime.getInstance().rewardId(__instance))
+                    + ",\"reward_index\":" + (AbstractDungeon.combatRewardScreen == null ? -1
+                        : AbstractDungeon.combatRewardScreen.rewards.indexOf(__instance))
+                    + ",\"linked_reward_id\":" + quote(ActionRecorderRuntime.getInstance().rewardId(__instance.relicLink));
             if (__instance.relic != null) {
                 details += ",\"relic_id\":" + quote(__instance.relic.relicId)
                         + ",\"relic_name\":" + quote(__instance.relic.name);
@@ -579,8 +588,14 @@ public final class DecisionPatches {
     @SpirePatch(clz = BossRelicSelectScreen.class, method = "relicObtainLogic",
             paramtypez = {AbstractRelic.class})
     public static class BossRelicPick {
+        private static int selectedIndex;
+        private static String selectedRewardId;
         @SpirePrefixPatch
-        public static void prefix() { ActionRecorderRuntime.getInstance().beginDecision(); }
+        public static void prefix(BossRelicSelectScreen __instance, AbstractRelic relic) {
+            selectedIndex = __instance == null || __instance.relics == null ? -1 : __instance.relics.indexOf(relic);
+            selectedRewardId = ActionRecorderRuntime.getInstance().rewardId(relic);
+            ActionRecorderRuntime.getInstance().beginDecision();
+        }
         @SpirePostfixPatch
         public static void postfix(BossRelicSelectScreen __instance, AbstractRelic relic) {
             BossRelicSelectScreen screen = __instance;
@@ -589,11 +604,12 @@ public final class DecisionPatches {
                 return;
             }
             ActionRecorderRuntime.getInstance().recordAction(
-                    "CHOOSE:index=" + (screen == null || screen.relics == null
-                            ? -1 : screen.relics.indexOf(relic)),
+                    "CHOOSE:index=" + selectedIndex,
                     "boss_relic_selected",
                     "\"relic_id\":" + quote(relic.relicId)
-                            + ",\"relic_name\":" + quote(relic.name));
+                            + ",\"relic_name\":" + quote(relic.name)
+                            + ",\"reward_id\":" + quote(selectedRewardId)
+                            + ",\"reward_index\":" + selectedIndex);
         }
     }
 
@@ -755,7 +771,8 @@ public final class DecisionPatches {
     @SpirePatch(clz = com.megacrit.cardcrawl.ui.buttons.SingingBowlButton.class, method = "onClick")
     public static class SingingBowlChoice {
         @SpirePrefixPatch public static void prefix() {
-            ActionRecorderRuntime.getInstance().recordAction("REWARD:BOWL", "singing_bowl_chosen", "\"max_hp_gain\":2");
+            ActionRecorderRuntime.getInstance().recordAction("REWARD:BOWL", "singing_bowl_chosen",
+                    "\"max_hp_gain\":2" + ActionRecorderRuntime.getInstance().cardRewardSourceDetails());
         }
     }
 

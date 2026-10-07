@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:actionrecorder:game-state:0.5",
-  "title": "ActionRecorder 0.5 raw game_state (Mod 0.1.4)",
+  "title": "ActionRecorder 0.5 raw game_state (Mod 0.1.5)",
   "type": "object",
   "required": ["screen_type", "screen_name", "is_screen_up", "room_phase", "action_phase", "room_type", "act", "floor", "class", "ascension_level", "current_hp", "max_hp", "gold", "act_boss", "keys", "deck", "relics", "potions", "map"],
   "properties": {
@@ -31,6 +31,14 @@
     "screen_state": {
       "type": ["object", "null"],
       "properties": {
+        "source_reward_id": {"type": ["string", "null"]},
+        "rewards": {"type": ["array", "null"], "items": {
+          "type": "object",
+          "properties": {"reward_id": {"type": ["string", "null"]},
+                         "reward_index": {"type": ["integer", "null"]},
+                         "linked_reward_id": {"type": ["string", "null"]}},
+          "additionalProperties": true
+        }},
         "cards": {"$ref": "#/$defs/cards"},
         "hand": {"$ref": "#/$defs/cards"},
         "selected": {"$ref": "#/$defs/cards"},

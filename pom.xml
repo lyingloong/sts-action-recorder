@@ -6,7 +6,7 @@
 
     <groupId>action-recorder</groupId>
     <artifactId>action-recorder</artifactId>
-    <version>0.1.4-SNAPSHOT</version>
+    <version>0.1.5-SNAPSHOT</version>
     <packaging>jar</packaging>
     <name>StS Action Recorder</name>
     <description>High-level in-game decision event recorder for Slay the Spire.</description>

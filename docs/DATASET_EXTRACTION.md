@@ -55,6 +55,7 @@ dataset/
 | 字段 | 含义 |
 | --- | --- |
 | `run_id / transaction_id / order` | 对局、动作身份及局内顺序 |
+| `segment_id` | 开始/读档片段；旧记录未提供时为 null，不能跨片段视为连续状态转移 |
 | `status` | accepted / rejected / pending；accepted 不等于队列动作已执行 |
 | `before_state_id / observation_before` | 显式引用的提交前完整 CommunicationMod **消息 envelope** |
 | `available_actions` | 原始 available_commands 和 choice_list，不扩展成模型合法动作 |
@@ -77,6 +78,10 @@ dataset/
 
 同一输出目录不可重复写入，避免误覆盖或混入旧数据。JSON 损坏、事件身份冲突会报错，
 原始输入始终只读。没有选中对局仍输出空 manifest，便于检查筛选条件。
+
+0.1.5 的 run_resumed 和 run_checkpoint 原样保留在 events；manifest 的对局 metadata.segments
+列出开始/读档边界和 checkpoint 来源。提取工具不删除回滚前操作、不自动推断旧版分裂
+的 run_id；下游按 segment_id 构造历史、划分样本或处理重玩的分支。
 
 ## 下游使用
 

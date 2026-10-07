@@ -74,7 +74,7 @@ def run_metadata(events: list[dict]) -> dict:
     metadata = {"character": None, "ascension": None, "seed": None}
     warnings = []
     for event in events:
-        if event.get("type") == "run_started":
+        if event.get("type") in {"run_started", "run_resumed"}:
             for key in metadata:
                 value = event.get(key)
                 if value is not None:
@@ -100,6 +100,8 @@ def run_metadata(events: list[dict]) -> dict:
             else:
                 victory_type = "heart" if act == 4 else "normal" if act == 3 else "unknown"
     metadata.update(outcome=outcome, victory_type=victory_type,
+                    segments=[{key: event.get(key) for key in ("type", "segment_id", "checkpoint_id", "recording_started_mid_run")}
+                              for event in events if event.get("type") in {"run_started", "run_resumed"}],
                     warnings=sorted(set(warnings)),
                     mod_versions=sorted({str(e["mod_version"]) for e in events if e.get("mod_version")}),
                     event_schema_versions=sorted({str(e["schema_version"]) for e in events if e.get("schema_version")}))
@@ -143,6 +145,8 @@ def extract_steps(events: list[dict]) -> list[dict]:
             if (message.get("recorder_state_id") != sid
                     or published.get("recorder_session") != event.get("recorder_session")):
                 flags.append(f"{label}_identity_mismatch")
+            if event.get("segment_id") is not None and message.get("recorder_segment_id") != event["segment_id"]:
+                flags.append(f"{label}_segment_mismatch")
             marker_index = group.get(event.get("type"), (-1, {}))[0]
             if index > marker_index:
                 flags.append(f"{label}_published_after_marker")
@@ -171,6 +175,7 @@ def extract_steps(events: list[dict]) -> list[dict]:
             flags.append("execution_boundary_unconfirmed")
         rows.append({
             "schema_version": "actionrecorder-step-1", "run_id": events[0].get("run_id"),
+            "segment_id": begin.get("segment_id"),
             "transaction_id": tx, "order": len(rows),
             "status": "rejected" if rejected else "accepted" if accepted else "pending",
             "before_state_id": begin.get("before_state_id"), "observation_before": before,

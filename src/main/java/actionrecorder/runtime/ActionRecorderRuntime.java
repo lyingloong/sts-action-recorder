@@ -39,7 +39,7 @@ import java.util.concurrent.TimeUnit;
  */
 public final class ActionRecorderRuntime {
     private static final ActionRecorderRuntime INSTANCE = new ActionRecorderRuntime();
-    private static final String MOD_VERSION = "0.1.4";
+    private static final String MOD_VERSION = "0.1.5";
     private static final String SCHEMA_VERSION = "0.5";
 
     private final String host;
@@ -78,8 +78,12 @@ public final class ActionRecorderRuntime {
     private String lastGridSelectionSignature = "";
     private boolean gridPreviewActive;
     private String lastHandSelectionSignature = "";
-    private String savedRunId;
-    private String savedFingerprint;
+    private RunIdentity runIdentity;
+    private JsonElement loadedIdentity;
+    private boolean pendingLoad;
+    private boolean loadFieldsRestored;
+    private String segmentId;
+    private final RewardIdentity rewardIdentity = new RewardIdentity();
     private String activeRunId;
     private String activeFile;
     private volatile ActionToastOverlay actionToast;
@@ -148,25 +152,49 @@ public final class ActionRecorderRuntime {
     }
 
     public synchronized com.google.gson.JsonElement saveRunIdentity() {
-        com.google.gson.JsonObject value = new com.google.gson.JsonObject();
-        if (savedRunId != null) {
-            value.addProperty("run_id", savedRunId);
+        // Loading can itself construct another SaveFile before PostUpdate.
+        // Do not replace the restored checkpoint with an empty/new identity.
+        if (pendingLoad && loadFieldsRestored && loadedIdentity != null && loadedIdentity.isJsonObject()
+                && loadedIdentity.getAsJsonObject().has("run_id")) {
+            return new JsonParser().parse(loadedIdentity.toString());
         }
-        if (savedFingerprint != null) {
-            value.addProperty("fingerprint", savedFingerprint);
+        // Vanilla may construct its first checkpoint before the first PostUpdate.
+        // Allocate the identity now, and reuse it when the run becomes ready.
+        if (runIdentity == null && !pendingLoad && !com.megacrit.cardcrawl.core.CardCrawlGame.loadingSave
+                && AbstractDungeon.player != null
+                && com.megacrit.cardcrawl.core.Settings.seed != null) {
+            runIdentity = RunIdentity.fresh(AbstractDungeon.player.chosenClass.name(),
+                    AbstractDungeon.ascensionLevel, String.valueOf(com.megacrit.cardcrawl.core.Settings.seed));
         }
+        if (runIdentity == null) return new JsonObject();
+        JsonObject value = runIdentity.checkpoint(segmentId, publishedStateId);
+        if (inRun) emit("run_checkpoint", "\"checkpoint_id\":" + quote(runIdentity.checkpointId)
+                + ",\"checkpoint_state_id\":" + quote(publishedStateId));
         return value;
     }
 
     public synchronized void restoreRunIdentity(com.google.gson.JsonElement value) {
-        if (value == null || !value.isJsonObject()) {
-            savedRunId = null;
-            savedFingerprint = null;
-            return;
+        loadedIdentity = value == null ? null : new JsonParser().parse(value.toString());
+        pendingLoad = true;
+        loadFieldsRestored = true;
+    }
+
+    public synchronized void beginLoadingSave() {
+        if (inRun) {
+            cancelPendingQueued("save_reload_before_execution");
+            emit("run_ended", "\"reason\":\"save_reload\",\"terminal\":false");
         }
-        com.google.gson.JsonObject object = value.getAsJsonObject();
-        savedRunId = object.has("run_id") ? object.get("run_id").getAsString() : null;
-        savedFingerprint = object.has("fingerprint") ? object.get("fingerprint").getAsString() : null;
+        resetRunState();
+        loadedIdentity = null;
+        pendingLoad = true;
+        loadFieldsRestored = false;
+    }
+
+    public synchronized String rewardId(Object reward) { return rewardIdentity.id(reward); }
+
+    public synchronized String cardRewardSourceDetails() {
+        CardRewardScreen screen = AbstractDungeon.cardRewardScreen;
+        return ",\"source_reward_id\":" + quote(screen == null ? null : rewardId(screen.rItem));
     }
 
     /**
@@ -185,7 +213,8 @@ public final class ActionRecorderRuntime {
     /** Called at the accepted skip-button branch, before the reward screen closes. */
     public synchronized void recordCardRewardSkip() {
         if (!captureMode.enabled()) return;
-        recordActionFromSnapshot("SKIP", "card_reward_skipped", "");
+        recordActionFromSnapshot("SKIP", "card_reward_skipped", "\"source_reward_id\":"
+                + quote(AbstractDungeon.cardRewardScreen == null ? null : rewardId(AbstractDungeon.cardRewardScreen.rItem)));
     }
 
     /** Discovery potions/cards and Choose One cards select options without acquireCard(). */
@@ -199,7 +228,7 @@ public final class ActionRecorderRuntime {
                 "\"selection_mode\":" + quote(mode)
                         + ",\"card_id\":" + quote(card.cardID)
                         + ",\"card_name\":" + quote(card.name)
-                        + ",\"card_uuid\":" + quote(String.valueOf(card.uuid)));
+                        + ",\"card_uuid\":" + quote(String.valueOf(card.uuid)) + cardRewardSourceDetails());
     }
 
     private void recordActionFromSnapshot(String id, String kind, String details) {
@@ -239,7 +268,7 @@ public final class ActionRecorderRuntime {
             // one frame. Publication uses CommunicationMod's script channel;
             // no elapsed-time matching or full serialization every frame.
             publishedStateId = null;
-            stateBridge.publish();
+            stateBridge.publish("action_before");
             String transactionId = recorderSession + ":tx-" + UUID.randomUUID().toString();
             transactionStack.push(transactionId);
             emit("action_begin", "\"transaction_id\":" + quote(transactionId)
@@ -299,6 +328,10 @@ public final class ActionRecorderRuntime {
         if (!captureMode.enabled()) {
             return;
         }
+        // Never initialize a journal from transient act=0/seed=null globals.
+        // BaseMod invokes onLoadRaw from loadPlayerSave's postfix.
+        if (com.megacrit.cardcrawl.core.CardCrawlGame.loadingSave
+                || (pendingLoad && !loadFieldsRestored)) return;
         if (AbstractDungeon.screen == AbstractDungeon.CurrentScreen.DEATH) {
             markRunTerminal("death");
         } else if (AbstractDungeon.screen == AbstractDungeon.CurrentScreen.VICTORY) {
@@ -329,26 +362,35 @@ public final class ActionRecorderRuntime {
                 String reason = terminalReason == null ? "dungeon_left" : terminalReason;
                 cancelPendingQueued("dungeon_left_before_execution");
                 emit("run_ended", "\"reason\":" + quote(reason) + ",\"terminal\":" + terminal);
-                if (terminal) {
-                    savedRunId = null;
-                    savedFingerprint = null;
-                }
             }
             resetRunState();
             return;
         }
 
         if (!inRun) {
+            if (AbstractDungeon.player.chosenClass == null || !RunIdentity.ready(
+                    com.megacrit.cardcrawl.core.CardCrawlGame.loadingSave, pendingLoad, loadFieldsRestored,
+                    AbstractDungeon.actNum, pendingLoad ? com.megacrit.cardcrawl.core.CardCrawlGame.saveFile != null
+                    : com.megacrit.cardcrawl.core.Settings.seed != null)) return;
+            boolean resumed = pendingLoad;
+            boolean existingIdentity = loadedIdentity != null && loadedIdentity.isJsonObject()
+                    && loadedIdentity.getAsJsonObject().has("run_id")
+                    && !loadedIdentity.getAsJsonObject().get("run_id").isJsonNull();
             startOrResumeRun();
             inRun = true;
             lastTurn = -1;
             lastRoom = "";
             lastGridSelectionSignature = "";
             lastHandSelectionSignature = "";
-            emit("run_started", "\"character\":" + quote(AbstractDungeon.player.chosenClass.name())
+            emit(resumed ? "run_resumed" : "run_started", "\"character\":" + quote(runIdentity.character)
                     + ",\"act\":" + AbstractDungeon.actNum
-                    + ",\"ascension\":" + AbstractDungeon.ascensionLevel
-                    + ",\"seed\":" + quote(String.valueOf(com.megacrit.cardcrawl.core.Settings.seed)));
+                    + ",\"ascension\":" + runIdentity.ascension
+                    + ",\"seed\":" + quote(runIdentity.seed)
+                    + ",\"checkpoint_id\":" + quote(runIdentity.checkpointId)
+                    + ",\"checkpoint_segment_id\":" + quote(runIdentity.checkpointSegment)
+                    + ",\"checkpoint_state_id\":" + quote(runIdentity.checkpointState)
+                    + ",\"recording_started_mid_run\":" + (resumed && !existingIdentity)
+                    + ",\"context\":" + contextJson());
         }
 
         if (AbstractDungeon.screen != AbstractDungeon.CurrentScreen.GRID) {
@@ -374,10 +416,16 @@ public final class ActionRecorderRuntime {
             // Initialize metadata before the first boundary snapshot is saved.
             if (root.get("in_game").getAsBoolean() && !inRun
                     && AbstractDungeon.player != null && AbstractDungeon.isPlayerInDungeon()) update();
+            if (root.get("in_game").getAsBoolean() && !inRun) return message;
             publishedStateId = recorderSession + ":state-" + (++publishedStateSeq);
             root.addProperty("recorder_state_id", publishedStateId);
             root.addProperty("recorder_state_seq", publishedStateSeq);
             root.addProperty("recorder_session", recorderSession);
+            root.addProperty("recorder_segment_id", segmentId);
+            // Boundary snapshots share the script pipe for exact journal
+            // matching, but are NOT command replies or decision-ready events.
+            // Preserve CM's original readiness; consumers distinguish purpose.
+            stateBridge.stampSnapshotMetadata(root);
             JsonObject saved = new JsonParser().parse(root.toString()).getAsJsonObject();
             if (saved.has("game_state") && saved.get("game_state").isJsonObject()) {
                 JsonObject state = saved.getAsJsonObject("game_state");
@@ -496,7 +544,7 @@ public final class ActionRecorderRuntime {
         if (!queuedDecisions.hasPending(key)) return; // Engine autoplay is not a human decision.
         QueuedDecisionTracker.Entry<Object> entry = queuedDecisions.begin(key);
         publishedStateId = null;
-        stateBridge.publish();
+        stateBridge.publish("execution_before");
         emit("action_execution_begin", "\"transaction_id\":" + quote(entry.transactionId)
                 + ",\"execution_before_state_id\":" + quote(publishedStateId)
                 + ",\"action\":" + executionActionJson(head)
@@ -547,7 +595,7 @@ public final class ActionRecorderRuntime {
         QueuedDecisionTracker.Entry<Object> active = queuedDecisions.finishActive();
         if (active == null) return;
         publishedStateId = null;
-        stateBridge.publish();
+        stateBridge.publish("effects_settled");
         emit("action_effects_settled", "\"transaction_id\":" + quote(active.transactionId)
                 + ",\"after_state_id\":" + quote(publishedStateId) + ",\"logical_boundary\":true");
     }
@@ -798,28 +846,25 @@ public final class ActionRecorderRuntime {
         activeRunId = null;
         activeFile = null;
         latestFrameSnapshot = null;
+        publishedStateId = null;
+        runIdentity = null;
+        segmentId = null;
+        rewardIdentity.clear();
         transactionStack.clear();
         queuedDecisions.clear();
     }
 
     private void startOrResumeRun() {
-        String fingerprint = fingerprint();
-        if (savedRunId == null || savedFingerprint == null || !savedFingerprint.equals(fingerprint)) {
-            savedRunId = UUID.randomUUID().toString();
-            savedFingerprint = fingerprint;
-        }
-        activeRunId = savedRunId;
-        activeFile = new File(
-                eventsDirectory,
-                "run-" + sanitize(activeRunId) + "-" + sanitize(fingerprint) + ".jsonl"
-        ).getPath();
-    }
-
-    private String fingerprint() {
-        String character = AbstractDungeon.player == null || AbstractDungeon.player.chosenClass == null
-                ? "UNKNOWN" : AbstractDungeon.player.chosenClass.name();
-        return character + "-A" + AbstractDungeon.ascensionLevel
-                + "-seed-" + String.valueOf(com.megacrit.cardcrawl.core.Settings.seed);
+        String character = AbstractDungeon.player.chosenClass.name();
+        String seed = String.valueOf(pendingLoad ? com.megacrit.cardcrawl.core.CardCrawlGame.saveFile.seed
+                : com.megacrit.cardcrawl.core.Settings.seed);
+        if (pendingLoad) runIdentity = RunIdentity.resume(loadedIdentity, character, AbstractDungeon.ascensionLevel, seed);
+        else if (runIdentity == null) runIdentity = RunIdentity.fresh(character, AbstractDungeon.ascensionLevel, seed);
+        activeRunId = runIdentity.runId;
+        activeFile = new File(eventsDirectory, runIdentity.fileName).getPath();
+        segmentId = "segment-" + UUID.randomUUID().toString();
+        pendingLoad = false;
+        loadedIdentity = null;
     }
 
     private void emit(String type, String payload) {
@@ -833,6 +878,7 @@ public final class ActionRecorderRuntime {
                 + ",\"timestamp_ms\":" + now
                 + ",\"type\":" + quote(type)
                 + (activeRunId == null ? "" : ",\"run_id\":" + quote(activeRunId))
+                + (segmentId == null ? "" : ",\"segment_id\":" + quote(segmentId))
                 + (payload == null || payload.length() == 0 ? "" : "," + payload)
                 + "}";
         // PostUpdate and screen patches run on the game's update thread.

@@ -42,6 +42,61 @@ public final class CommunicationStatePatches {
     private CommunicationStatePatches() {
     }
 
+    /** Same order as CommunicationMod choices; do not expose unopened cards. */
+    @SpirePatch(cls = "communicationmod.GameStateConverter", method = "getCombatRewardState",
+            requiredModId = "CommunicationMod", optional = true)
+    public static class RewardIds {
+        @SuppressWarnings("unchecked")
+        @SpirePostfixPatch public static HashMap<String, Object> postfix(HashMap<String, Object> __result) {
+            if (__result == null || com.megacrit.cardcrawl.dungeons.AbstractDungeon.combatRewardScreen == null) return __result;
+            Object entries = __result.get("rewards");
+            java.util.List<com.megacrit.cardcrawl.rewards.RewardItem> rewards =
+                    com.megacrit.cardcrawl.dungeons.AbstractDungeon.combatRewardScreen.rewards;
+            if (!(entries instanceof java.util.List) || rewards == null) return __result;
+            java.util.List<?> values = (java.util.List<?>) entries;
+            for (int i = 0; i < values.size() && i < rewards.size(); i++) {
+                if (!(values.get(i) instanceof Map)) continue;
+                Map<String, Object> value = (Map<String, Object>) values.get(i);
+                com.megacrit.cardcrawl.rewards.RewardItem reward = rewards.get(i);
+                value.put("reward_id", ActionRecorderRuntime.getInstance().rewardId(reward));
+                value.put("reward_index", i);
+                value.put("linked_reward_id", ActionRecorderRuntime.getInstance().rewardId(reward.relicLink));
+            }
+            return __result;
+        }
+    }
+
+    @SpirePatch(cls = "communicationmod.GameStateConverter", method = "getCardRewardState",
+            requiredModId = "CommunicationMod", optional = true)
+    public static class CardRewardSource {
+        @SpirePostfixPatch public static HashMap<String, Object> postfix(HashMap<String, Object> __result) {
+            if (__result != null) __result.put("source_reward_id", ActionRecorderRuntime.getInstance().rewardId(
+                    com.megacrit.cardcrawl.dungeons.AbstractDungeon.cardRewardScreen == null ? null
+                    : com.megacrit.cardcrawl.dungeons.AbstractDungeon.cardRewardScreen.rItem));
+            return __result;
+        }
+    }
+
+    @SpirePatch(cls = "communicationmod.GameStateConverter", method = "getBossRewardState",
+            requiredModId = "CommunicationMod", optional = true)
+    public static class BossRewardIds {
+        @SuppressWarnings("unchecked")
+        @SpirePostfixPatch public static HashMap<String, Object> postfix(HashMap<String, Object> __result) {
+            if (__result == null || com.megacrit.cardcrawl.dungeons.AbstractDungeon.bossRelicScreen == null) return __result;
+            Object entries = __result.get("relics");
+            java.util.List<AbstractRelic> relics = com.megacrit.cardcrawl.dungeons.AbstractDungeon.bossRelicScreen.relics;
+            if (!(entries instanceof java.util.List) || relics == null) return __result;
+            java.util.List<?> values = (java.util.List<?>) entries;
+            for (int i = 0; i < values.size() && i < relics.size(); i++) {
+                if (!(values.get(i) instanceof Map)) continue;
+                Map<String, Object> value = (Map<String, Object>) values.get(i);
+                value.put("reward_id", ActionRecorderRuntime.getInstance().rewardId(relics.get(i)));
+                value.put("reward_index", i);
+            }
+            return __result;
+        }
+    }
+
     @SpirePatch(
             cls = "communicationmod.GameStateConverter",
             method = "getCommunicationState",

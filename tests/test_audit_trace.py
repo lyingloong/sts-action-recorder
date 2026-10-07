@@ -53,6 +53,22 @@ class AuditTraceTests(unittest.TestCase):
         values.append({"recorder_session": "other", "run_id": "r", "event_seq": 1, "type": "run_started"})
         self.assertEqual(self.check_events(values)["errors"], [])
 
+    def test_reward_identity_and_resume_metadata_are_checked(self):
+        values = events()
+        game = values[0]["message"]["game_state"]
+        game.update(screen_type="COMBAT_REWARD", screen_state={"rewards": [
+            {"reward_type": "CARD", "reward_id": "reward-a", "reward_index": 0},
+            {"reward_type": "CARD", "reward_id": "reward-b", "reward_index": 1}]})
+        values[0]["mod_version"] = "0.1.5"
+        values[2]["action"] = {"id": "REWARD:TAKE:CARD", "kind": "reward_card_claimed",
+                                "reward_id": "reward-b", "reward_index": 1}
+        self.assertEqual(self.check_events(values)["errors"], [])
+        values[2]["action"]["reward_index"] = 0
+        self.assertTrue(any("reward identity/index" in e for e in self.check_events(values)["errors"]))
+        values.append({"recorder_session": "s", "run_id": "r", "event_seq": 5,
+                       "type": "run_resumed", "mod_version": "0.1.5", "act": 0, "seed": "null"})
+        self.assertTrue(any("unavailable act/seed" in e for e in self.check_events(values)["errors"]))
+
     def test_act_transition_cannot_be_claimed_as_victory(self):
         values = events()
         values[-1].update(type="run_ended", reason="victory")
