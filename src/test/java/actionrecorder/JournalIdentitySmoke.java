@@ -33,7 +33,12 @@ public final class JournalIdentitySmoke {
         check(id.equals(ids.id(a)), "reopening reward changed identity");
         check(!id.equals(ids.id(b)), "identical rewards collided");
         check(ids.id(null) == null, "unavailable reward must stay null");
+        check("R1".equals(ids.reference(a)), "first reference should be readable");
+        check("R2".equals(ids.reference(b)), "identical rewards need distinct references");
+        check("R1".equals(ids.reference(a)), "list mutations must not renumber a reward");
+        check(ids.reference(null) == null, "unknown readable reference remains null");
         ids.clear(); check(!id.equals(ids.id(a)), "reload must establish new reward object identities");
+        check("R1".equals(ids.reference(b)), "new segment resets readable references");
         System.out.println("PASS journal identity, load barrier, checkpoints and reward object IDs");
     }
 }

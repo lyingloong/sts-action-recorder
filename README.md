@@ -4,7 +4,7 @@
 并通过每局 JSONL 文件和可选的 TCP 流提供数据。推荐与
 [CommunicationMod](https://github.com/ForgottenArbiter/CommunicationMod) 一起使用，记录完整游戏状态。
 
-当前 Mod 版本 **0.1.5**，事件协议 **0.5**。Java 8、ModTheSpire 和 BaseMod 为运行依赖；
+当前 Mod 版本 **0.1.6**，事件协议 **0.5**。Java 8、ModTheSpire 和 BaseMod 为运行依赖；
 离线工具使用 Python 3.10+ 标准库。
 
 ## 快速开始
@@ -66,6 +66,11 @@ ActionRecorder 是 TCP 客户端，默认连接 `127.0.0.1:8766`。接收端按 
 
 数据集使用与原始格式由本仓库定义。ActionRecorder 只读取游戏运行时公开对象中的实体说明，
 不维护攻略或静态实体知识。提示词、模型动作编码和训练样本筛选由下游应用实现。
+
+## 参与开发
+
+问题反馈、改动原则与提交前检查见 [贡献指南](CONTRIBUTING.md)。GitHub Actions 验证无游戏依赖的
+Python 工具；Java 构建、补丁校验与实机验收需要开发者本地安装游戏依赖。
 
 ## 许可证
 

@@ -31,6 +31,13 @@ Mod 0.1.5 另需验证：多份同名奖励（例如星系仪）各有不同 rew
 segment_id。战斗读档回到开场属于真实回滚，不要求它与保存前最后状态连续。
 新开相同种子的另一局必须有新的 run_id。代码 smoke checks 不代替这些实机验收。
 
+Mod 0.1.6 还需单独验收脚本接口：通过 CommunicationMod 出牌、使用目标/非目标药水、
+丢弃药水、结束回合，逐项对照 Recorder 的 accepted/实际执行事件。
+用药消耗不能额外记为丢弃，队列自动重放不应增加玩家出牌记录。
+使用 AR1 关联协议时，比对 controller 的 command_confirmation.receipt.transaction_id 与
+Recorder transaction_id；未同步捕获到事务的界面命令只证明提交，不能伪造这条关联。
+故意使用旧前状态 ID、重复指令 ID 应被拒绝，且游戏不执行；采集快照不得触发第二个命令。
+
 自定义 Mod 可能采用其他 UI 或动作入口，应单独添加验收案例。把实际操作与事务逐一
 对照，不能仅根据动作总数判断是否漏采。
 

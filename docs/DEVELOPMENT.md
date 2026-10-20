@@ -11,10 +11,14 @@ src/main/java/actionrecorder/
   ui/                                   动作提示和可选动作提示框
   runtime/ActionRecorderRuntime.java     对局身份、事务、后台 JSONL/TCP 输出
   runtime/CommunicationStateBridge.java  调用 CommunicationMod 发布接口
+  runtime/CommandLedger.java             可选脚本指令关联、前状态校验和执行回执
+  runtime/DecisionState.java             独立执行校验投影，不改变完整录制状态
   runtime/QueuedDecisionTracker.java     排队动作身份与执行生命周期
   runtime/RuntimeStateFields.java        卡牌/玩家原始字段投影、缓存反射与 null 约定
+  runtime/GridCardPreviews.java          GRID 完整确认卡、游戏 UI/独立副本升级预览
   runtime/MatchGameState.java            翻牌公开棋盘、固定位置与已揭示记忆
   patches/CommunicationStatePatches.java 状态 ID、钥匙、卡牌/选牌字段补充
+  patches/CommunicationCommandPatches.java 官方指令回执、接口出牌/药水动作采集
   patches/DecisionPatches.java           细粒度游戏动作入口
   patches/RawInputPatches.java           键鼠调试输入
   patches/ControllerInputPatches.java    手柄调试输入
@@ -48,8 +52,11 @@ pom.xml 从以下相对位置读取依赖：
 仅构建检查、暂不安装时运行：
 
 ```powershell
-mvn clean package "-DSteam.path=$steamApps" "-Dmaven.antrun.skip=true"
+mvn clean package "-DSteam.path=$steamApps" "-Dactionrecorder.install.skip=true"
 ```
+
+这个选项只跳过最后的安装复制，仍运行 Java smoke 和字节码校验。
+不要用 `maven.antrun.skip` 代替它；后者会把验证任务也一起跳过。
 
 更换游戏或依赖版本后，需要重新检查补丁签名、启动日志和实际操作。
 
@@ -63,7 +70,13 @@ python tools/audit_trace.py "C:/path/to/game/data/actionrecorder/run-example.jso
 python tools/extract_dataset.py --help
 ```
 
-Java smoke checks 是独立 main 程序；不会由 Maven 自动作为 JUnit 测试执行。
+Java smoke checks 是独立 main 程序，不是 JUnit 测试。
+Maven 的 test 阶段会自动运行参数绑定、插桩编译、队列、运行时字段、存档/奖励身份、快照发布、
+DecisionStateSmoke、CampfireOptionsSmoke、GridCardPreviewsSmoke、RuntimeDescriptionsSmoke 和 CommandLedgerSmoke。
+安装了 CommunicationMod 时，还会通过实际 DataReader 测试 Windows CRLF 报文、检查真实 serializer，
+并运行 CommunicationBytecodeSmoke。
+JVM 校验失败就阻止后续 package/安装。未安装这个可选依赖时明确打印 SKIP，不阻止独立 Mod 构建；
+手动运行下面不带 `--if-installed` 的 serializer/字节码命令则不会跳过。
 构建后在本仓库根目录设置 classpath：
 
 ```powershell
@@ -74,9 +87,14 @@ $communicationJar = "$steamApps/workshop/content/646570/2131373661/Communication
 $patchClasspath = "target/classes;target/test-classes;$gameJar;$baseModJar;$mtsJar;$communicationJar"
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.PatchBindingSmoke
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.PatchInstrumentationSmoke
+& "$env:JAVA_HOME/bin/java.exe" -Xverify:all -cp $patchClasspath actionrecorder.CommunicationBytecodeSmoke
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.QueuedDecisionTrackerSmoke
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.RuntimeStateFieldsSmoke
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.RuntimeDescriptionsSmoke
+& "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.runtime.GridCardPreviewsSmoke
+& "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.CommandLedgerSmoke
+& "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.DecisionStateSmoke
+& "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.CampfireOptionsSmoke
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.CommunicationSerializationSmoke
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.JournalIdentitySmoke
 & "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.runtime.CommunicationSnapshotSmoke
@@ -84,6 +102,27 @@ $patchClasspath = "target/classes;target/test-classes;$gameJar;$baseModJar;$mtsJ
 
 PatchBindingSmoke 使用 ModTheSpire 参数绑定逻辑检查 prefix/postfix，包括历史错误签名的
 失败回归。PatchInstrumentationSmoke 对实际安装 jar 编译 ExprEditor 替换代码。
+CommunicationBytecodeSmoke 将 CommunicationMod 的 instrument 补丁应用到实际 jar，
+生成完整 class 文件并通过隔离加载器交给 JVM 加载和校验（不初始化游戏）。
+补丁能编译不等于字节码能通过校验；这一步覆盖接口药水记录曾出现的 VerifyError。
+CommandLedgerSmoke 检查命令关联、重复/过期状态拒绝、原始命令兼容性、LF/CRLF 外层报文，
+以及载荷内部换行和非法 Base64 仍被拒绝。实际 DataReader 的回归测试包含 START 和 STATE，
+避免仅测试不带换行的内存字符串而遗漏 Windows 脚本接口行为。
+DecisionStateSmoke 验证非手牌的展示数值重置可通过，但原始 JSON 保持完整；卡牌身份/顺序、
+升级/费用、玩家/敌人/界面变化以及未知字段仍被拒绝。静态描述、自定义动态变量不被忽略。
+CommandLedgerSmoke 还验证结构化拒绝码，确保执行器异常或已入队事务不会错误标为 not_executed。
+CampfireOptionsSmoke 检查营火继承字段、当前语言说明、未知模组选项、原始明细独立快照，
+以及复用 CommunicationMod 名称后的数量、索引和等长错序校验。源字段不可用时保留 null，
+不会构造营火按钮或执行其 useOption。
+对已录制的 controller 消息还可回放校验投影：
+
+```powershell
+& "$env:JAVA_HOME/bin/java.exe" -cp $patchClasspath actionrecorder.DecisionStateSmoke --replay /path/to/messages.jsonl 26 28
+```
+
+末尾两个参数是 `message_index`；程序要求两份原始观察确实不同、但校验投影相同。
+这用于验证非手牌临时数值重置的误拒绝案例，不代表任何不同状态都应通过校验。
+
 QueuedDecisionTrackerSmoke 检查对象身份、执行/取消和重置。RuntimeStateFieldsSmoke 用
 合成对象检查运行时标记、玩家计数/姿态、翻牌位置与公开信息边界。这些检查不代替游戏启动和
 [实际采集验收](COLLECTION_AUDIT.md)。其他系统使用相应 classpath 分隔符和 Java 路径。
@@ -93,6 +132,14 @@ CommunicationSerializationSmoke 使用实际 CommunicationMod 的 shaded Gson �
 队列测试覆盖自动连锁、下一项人类操作和结束回合等待；字段测试包含单卡预览/多选确认。
 描述测试检查牌组中尚未初始化的数值回退到游戏对象的基础值、战斗内零值不被覆盖，
 以及未知数值保持不可用和游戏文本格式的清理。
+GridCardPreviewsSmoke 验证候选只升级独立副本、原牌和现成 UI 预览不变、模组候选明确未知、
+确认卡字段完整、非升级场景无预览、列表身份错位拒绝，以及重复 STATE 不受副本随机 UUID 影响。
+原版候选识别使用游戏 ClassLoader 和原始 class 资源所在 JAR，结果按 Class 缓存；
+不依赖 ProtectionDomain/CodeSource，因为 ModTheSpire 重定义补丁类时不保留这些来源信息。
+回归检查同时覆盖普通 classpath 与 null-domain 类加载环境。未知模组卡、非游戏 JAR 资源、
+无法确认的类资源以及带 CardModifier 的卡牌仍保守拒绝合成预览。
+这不是模组代码沙箱：其他模组仍可能补丁修改原版卡；因此独立副本、对象身份检查和异常回退仍需保留。
+能量图标检查覆盖中文、各色能量、数字/重复图标和普通文字不被替换。
 
 ## 采集实现
 
@@ -157,6 +204,12 @@ public static boolean postfix(boolean __result, Target __instance) {
 将 __result 放在不支持的位置、声明为 void 或改变返回值，可能导致
 “Illegal patch parameter: Cannot determine name” 或改变游戏行为。
 因此 prefix/postfix 绑定和 ExprEditor 编译都需要检查。
+
+Javassist 的替换代码编译器不能依赖 Java 泛型隐式插入类型转换。
+例如从 `ArrayList<AbstractPotion>` 调用 `get()` 时，必须显式写
+`(AbstractPotion) player.potions.get(index)`；仅声明左侧变量为 AbstractPotion 不足以保证
+生成 `checkcast`，可能编译通过但游戏启动时报 `VerifyError: Bad type on operand stack`。
+修改此类补丁后必须运行 JVM 字节码校验测试，不能通过关闭校验绕过错误。
 
 依赖更新后按实际 jar 检查签名、运行 smoke checks、查看 ModTheSpire 启动日志，并进行
 常见场景采集验收。开发文档不把某次测试数量视为长期覆盖承诺。

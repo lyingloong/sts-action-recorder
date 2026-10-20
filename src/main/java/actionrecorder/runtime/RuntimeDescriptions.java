@@ -4,10 +4,14 @@ import basemod.BaseMod;
 import basemod.abstracts.DynamicVariable;
 import com.megacrit.cardcrawl.cards.AbstractCard;
 import com.megacrit.cardcrawl.helpers.PowerTip;
+import com.megacrit.cardcrawl.helpers.GameDictionary;
 import com.megacrit.cardcrawl.potions.AbstractPotion;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.Locale;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -23,9 +27,9 @@ public final class RuntimeDescriptions {
                 .replaceAll("\\[#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})\\]", "")
                 .replace("[]", "")
                 .replace("~", "").replace("@", "")
-                .replace("[E]", "Energy").replace("[R]", "Energy")
-                .replace("[G]", "Energy").replace("[B]", "Energy")
-                .replace("[W]", "Energy").trim();
+                .replace("[E]", "能量").replace("[R]", "红色能量")
+                .replace("[G]", "绿色能量").replace("[B]", "蓝色能量")
+                .replace("[W]", "紫色能量").trim();
     }
 
     public static void addCard(Map<String, Object> output, AbstractCard card) {
@@ -36,6 +40,7 @@ public final class RuntimeDescriptions {
         output.put("description_complete", card.rawDescription != null && unresolved.isEmpty());
         output.put("unresolved_description_variables", unresolved);
         output.put("multi_damage", card.multiDamage == null ? null : card.multiDamage.clone());
+        output.put("keyword_tooltips", keywordTips(card.keywords, GameDictionary.keywords, GameDictionary.parentWord));
     }
 
     public static String renderCard(AbstractCard card, ArrayList<String> unresolved) {
@@ -102,11 +107,59 @@ public final class RuntimeDescriptions {
         output.put("tooltips", tips);
         output.put("description_source", "game_runtime");
         output.put("target", potion.targetRequired);
+        // Actual secondary game tips, not text/name matches against a dictionary.
+        output.put("keyword_tooltips", secondaryTips(potion.tips, potion.name, potion.description));
     }
 
     public static void addText(Map<String, Object> output, String text) {
         output.put("raw_description", text);
         output.put("description", plain(text));
         output.put("description_source", "game_runtime");
+        // AbstractCreature.renderPowerTips uses this exact object's name and
+        // description. It does NOT look up a same-named generic keyword.
+        output.put("keyword_tooltips", new ArrayList<Map<String, Object>>());
+    }
+
+    public static void addRelic(Map<String, Object> output, com.megacrit.cardcrawl.relics.AbstractRelic relic) {
+        addText(output, relic.description);
+        output.put("keyword_tooltips", secondaryTips(relic.tips, relic.name, relic.description));
+    }
+
+    /** Game-associated keywords only; never scan names or arbitrary prose. */
+    public static List<Map<String, Object>> keywordTips(Iterable<String> declared,
+            Map<String, String> dictionary, Map<String, String> parents) {
+        ArrayList<Map<String, Object>> result = new ArrayList<>();
+        if (dictionary == null) return result;
+        LinkedHashSet<String> wanted = new LinkedHashSet<>();
+        if (declared != null) for (String word : declared) {
+            if (word != null) wanted.add(word.toLowerCase(Locale.ROOT));
+        }
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        for (String word : wanted) {
+            String parent = parents == null ? null : parents.get(word);
+            String header = parent == null ? word : parent;
+            String body = dictionary.get(header);
+            if (body == null) body = dictionary.get(word);
+            body = plain(body);
+            if (body == null || body.isEmpty() || !seen.add(header + "\n" + body)) continue;
+            LinkedHashMap<String, Object> tip = new LinkedHashMap<>();
+            tip.put("header", plain(header)); tip.put("body", body);
+            result.add(tip);
+        }
+        return result;
+    }
+
+    public static List<Map<String, Object>> secondaryTips(Iterable<PowerTip> tips, String name, String description) {
+        ArrayList<Map<String, Object>> result = new ArrayList<>();
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
+        if (tips != null) for (PowerTip tip : tips) {
+            if (tip == null) continue;
+            String header = plain(tip.header), body = plain(tip.body);
+            if (header == null || body == null || body.isEmpty() || header.equals(plain(name))
+                    || body.equals(plain(description)) || !seen.add(header + "\n" + body)) continue;
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("header", header); item.put("body", body); result.add(item);
+        }
+        return result;
     }
 }

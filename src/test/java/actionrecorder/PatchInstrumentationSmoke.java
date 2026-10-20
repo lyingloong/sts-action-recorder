@@ -5,6 +5,7 @@ import com.evacipated.cardcrawl.modthespire.lib.SpirePatch;
 import javassist.ClassPool;
 import javassist.CtClass;
 import javassist.CtMethod;
+import javassist.NotFoundException;
 import javassist.expr.ExprEditor;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
@@ -24,10 +25,18 @@ public final class PatchInstrumentationSmoke {
                 Class<?> patchClass = Class.forName(name, false, PatchInstrumentationSmoke.class.getClassLoader());
                 SpirePatch patch = patchClass.getAnnotation(SpirePatch.class);
                 if (patch == null) continue;
+                String targetName = patch.cls().isEmpty() ? patch.clz().getName() : patch.cls();
+                CtClass target;
+                try {
+                    target = pool.get(targetName);
+                } catch (NotFoundException missingTarget) {
+                    if (!patch.optional()) throw missingTarget;
+                    System.out.println("SKIP " + name + " -> " + targetName
+                            + ": optional target class is not installed");
+                    continue;
+                }
                 for (Method method : patchClass.getDeclaredMethods()) {
                     if (method.getAnnotation(SpireInstrumentPatch.class) == null) continue;
-                    String targetName = patch.cls().isEmpty() ? patch.clz().getName() : patch.cls();
-                    CtClass target = pool.get(targetName);
                     CtMethod original = target.getDeclaredMethod(patch.method());
                     original.instrument((ExprEditor) method.invoke(null));
                     System.out.println("PASS " + name + " -> " + targetName + "." + patch.method());

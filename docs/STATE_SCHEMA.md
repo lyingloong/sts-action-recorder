@@ -75,22 +75,177 @@ message 保留 CommunicationMod 原始 envelope：
 | combat_state.player（0.1.2 起） | stance、base_energy_per_turn、energy_per_turn、master_hand_size、game_hand_size、cards_played_this_turn |
 | Match and Keep! screen_state（0.1.2 起） | match_game：阶段、剩余尝试、配对数、公开棋盘和当前选中位置 |
 | HAND_SELECT screen_state | selection_reason、up_to、any_number、for_upgrade、for_transform |
-| GRID screen_state | selection_reason、confirm_screen_up、any_number、for_clarity、confirmation_card（ID/名称/UUID） |
-| COMBAT_REWARD screen_state.rewards（0.1.5 起） | reward_id、reward_index、linked_reward_id；只标识当前奖励对象，不提前暴露未打开的卡牌内容 |
-| CARD_REWARD screen_state（0.1.5 起） | source_reward_id；无 RewardItem 来源的独立选牌为 null |
-| BOSS_REWARD screen_state.relics（0.1.5 起） | 每个候选遗物的 reward_id、reward_index |
+| GRID screen_state | selection_reason、confirm_screen_up、any_number、for_clarity、confirmation_card（完整原牌字段） |
+| 升级 GRID 的候选/确认卡 | upgrade_preview、upgrade_preview_source、upgrade_preview_status：公开的升级后卡牌效果 |
+| COMBAT_REWARD screen_state.rewards（0.1.5 起） | reward_id、reward_ref、reward_index、linked_reward_id、linked_reward_ref；只标识当前奖励对象，不提前暴露未打开的卡牌内容 |
+| CARD_REWARD screen_state（0.1.5 起） | source_reward_id、source_reward_ref；无 RewardItem 来源的独立选牌为 null |
+| BOSS_REWARD screen_state.relics（0.1.5 起） | 每个候选遗物的 reward_id、reward_ref、reward_index |
+| REST screen_state | rest_option_details：与原 rest_options 一一对应的营火按钮运行时名称、说明和可用性 |
 
 卡牌数据来自运行时对象。0.1.4 起，`description` 将原始卡牌说明中的 BaseMod 动态变量
 按当前卡牌对象的值展开；`raw_description` 保留带占位符的游戏原文。字段
 `description_source="game_runtime"` 标记来源，`description_complete` 表示是否仍有未解析变量，
 `unresolved_description_variables` 列出未解析的变量名，`multi_damage` 保留当前缓存数组。
 遗物和 Power 的 `description` 取当前游戏对象；药水的 `description` 合并对象描述和 tooltip 正文，
-并保留 `tooltips`、`raw_description`、`target`。这些字段不从下游知识库补造。damage/block 等依赖游戏最近一次
+并保留 `tooltips`、`raw_description`、`target`。实体还提供 `keyword_tooltips` 列表（`header/body`）：
+卡牌只通过游戏对象的 `keywords` 查询当前语言的 GameDictionary（含 parentWord 别名），
+药水和遗物只读取该对象实际关联的二级 tooltip。Power 直接使用当前对象的说明，
+不因名字相同而加入通用词条（例如“愤怒”Power 不等于观者愤怒姿态、“变化”不等于随机变牌）。
+不扫描任意名称或正文来猜测词条关联。
+缺少解释时不补造，历史文件没有该字段时也不能推断补齐。这些字段不从下游知识库补造。damage/block 等依赖游戏最近一次
 计算，可能尚未包含所有目标相关和特殊效果修正，不能一律解释为最终生效值。
 选择场景已有的源字段，例如 for_purge、num_cards，照常保留。
 
+能量图标仅按游戏符号清理为中文：`[E]` → `能量`，`[R]/[G]/[B]/[W]` →
+`红色/绿色/蓝色/紫色能量`。数字和重复图标保持原有数量，普通文字（包括 `Energy`）
+不进行同义替换；`raw_description` 始终保留原图标及游戏格式。
+
 这些字段可能通过同一补丁出现在 CommunicationMod 自己的输出中；接收端仍按状态 ID
 关联消息。
+
+### 升级选牌的公开预览与确认卡
+
+`GRID.screen_state.confirmation_card` 在 `confirm_screen_up=true` 时读取当前
+`GridCardSelectScreen.hoveredCard`，使用同一完整卡牌转换器，包含 `type`、`cost`、
+`upgrades`、`description`、基础数值、标记与原有 UUID。它是确认对象的原牌；游戏在单卡
+确认时会清空 `selected_cards`，不能用该空列表代替当前确认卡。删牌和变化确认同样提供
+完整原牌；无法取得当前对象或转换失败为 `null`，不回退到历史选择。
+
+仅在 `for_upgrade=true` 的 GRID 中，`cards`、`selected_cards` 和 `confirmation_card`
+的卡牌增加以下字段，原有字段、候选顺序与选择索引保持不变：
+
+| 字段 | 含义 |
+| --- | --- |
+| upgrade_preview | 升级后可读卡牌对象，或无法安全获得时为 null |
+| upgrade_preview_source | `game_ui`：当前游戏确认界面现成预览；`game_copy`：按游戏流程生成的独立副本；不可用时 null |
+| upgrade_preview_status | `available`、`unsupported_card`（候选不能安全生成，包括未知类来源或 CardModifier）或 `unavailable`（对象/转换/可靠对应不可用） |
+
+确认中的目标优先读取游戏公开右侧的 `upgradePreviewCard`，不再执行升级。
+其他候选只对可确认来自本体游戏 jar、且没有 BaseMod CardModifier 的原版卡，调用与游戏相同的
+`makeStatEquivalentCopy()` → 副本 `upgrade()` → 副本 `displayUpgrades()`。
+升级前验证副本与原牌为不同对象且同一类，绝不调用原牌 `upgrade()`，不调用 `applyPowers()`，
+不以静态卡牌表猜测效果。模组卡没有现成 UI 预览时保持 `unsupported_card`，不会为了观察
+而执行其复制/升级方法。挂有 CardModifier 的原版牌也保持 `unsupported_card`，
+避免复制 modifier 时进入未知模组回调；已有公开 UI 预览则可照常读取。
+
+`upgrade_preview` 复用普通卡牌字段，包括类型、费用、升级次数、说明、动态变量和关键词，
+但不嵌套下一层 `upgrade_preview`，也不提供副本随机生成的 `uuid`。预览是原牌下的效果投影，
+通过外层原牌 UUID 关联，不是新的可选择牌；这样反复读取同一状态不会因临时副本 UUID
+变化触发指令保护误拒绝。预览保留未知动态变量/不完整说明标记，不保证所有特殊效果或
+战斗修正的最终结算值。非升级 GRID、牌组、战斗与奖励卡不增加此预览字段。
+
+### 营火按钮的运行时说明
+
+`REST` 的 `screen_state.rest_options` 保持 CommunicationMod 原始字符串和顺序，
+`CHOOSE` 仍使用该列表的 **0-based** 索引。新增 `rest_option_details` 是并行明细，
+不替换原选择列表，也不改变选择、锻造选牌、确认或返回等动作的粒度。
+
+明细读取 CommunicationMod 同一可用按钮对象列表，保留原过滤结果和顺序；
+`name` 和说明来自游戏 UI 实际读取的 `AbstractCampfireOption.label/description`，
+包括自定义营火选项；子类另行定义的同名字段不覆盖 UI 的基类字段。
+不按 `rest`、`smith` 等名称查静态知识库，也不重新计算效果。
+
+| 字段 | 含义 |
+| --- | --- |
+| choice_index | 与 `rest_options` 对应的 0-based `CHOOSE` 索引 |
+| choice | 该索引处原始 `rest_options` 字符串，例如 `rest` |
+| name | 游戏按钮的 `label`，保留当前游戏语言 |
+| description | 游戏按钮说明去除颜色标记、换行标记等格式后的正文 |
+| raw_description | 游戏按钮原始 `description`，保留游戏格式标记 |
+| description_source | 固定为 `game_runtime` |
+| usable | 游戏按钮的运行时可用标记；当前列表沿用 CommunicationMod 的可用按钮过滤 |
+| option_class | 按钮对象的完整运行时类名 |
+
+若按钮列表无法取得，或数量、顺序不能与 `rest_options` 可靠对应，
+`rest_option_details=null`；`[]` 只表示已确认当前没有选择。
+列表已可靠对应时，个别 `name/description/raw_description/usable` 读取失败为 `null`。
+旧记录没有明细字段时保持未知，不能根据原选项名补造说明。
+
+例如下面的文字仅示意字段结构，真实文字、数值和遗物附注以当前按钮为准：
+
+```json
+{
+  "rest_options": ["rest", "smith"],
+  "rest_option_details": [
+    {
+      "choice_index": 0,
+      "choice": "rest",
+      "name": "休息",
+      "description": "恢复 24 点生命。",
+      "raw_description": "恢复 #g24 点生命。",
+      "description_source": "game_runtime",
+      "usable": true,
+      "option_class": "com.megacrit.cardcrawl.ui.campfire.RestOption"
+    },
+    {
+      "choice_index": 1,
+      "choice": "smith",
+      "name": "锻造",
+      "description": "升级一张牌。",
+      "raw_description": "升级一张牌。",
+      "description_source": "game_runtime",
+      "usable": true,
+      "option_class": "com.megacrit.cardcrawl.ui.campfire.SmithOption"
+    }
+  ]
+}
+```
+
+休息说明中的恢复值、皇家枕头等遗物附注取当前 UI 文本，
+不是保证实际净回血的结算值。生命上限和遗物 `onRest()` 的额外效果等仍可能改变
+实际结果，按钮说明也不承诺列出全部结算效果。
+
+### 可选的指令关联协议
+
+安装 Recorder 后，正常状态和错误消息携带 `recorder_command_protocol: 1`。
+客户端可发送一行 `AR1 <command_id> <expected_recorder_state_id> <base64_utf8_command>`。
+外层报文支持 LF/CRLF 换行，解析前清理首尾传输空白；CommunicationMod 的 DataReader
+只消费 LF/NUL，Windows CRLF 中留下的 CR 不属于 Base64 载荷。仍使用严格 Base64 解码，
+解码后的命令不允许包含 CR/LF，不能把多条命令放进同一个 envelope。
+`STATE` 查询不需要前状态，可用 `-`；其余命令必须引用最近一次正常发布的状态 ID。
+采集专用快照不会替换这个决策状态。执行前再调用游戏的 GameStateConverter，比对独立的
+`DecisionState` 校验投影。它不修改完整原始记录：仅在战斗 draw/discard/exhaust 牌堆中，
+剔除具有已知 base_damage/base_block 的临时 damage/block；描述仅在含 D/B 变量且全部变量
+均为具有独立已知数值的 D/B/M 时忽略其渲染结果，raw_description 仍精确比较。
+这是为了容忍出牌后 resetAttributes() 恢复展示数值，不忽略真实战斗变化。
+手牌、limbo、牌堆成员及顺序、UUID、基础数值、升级、费用、所有标志、玩家/敌人/Power、
+回合、界面、readiness 和未知字段均保留。自定义动态变量和静态描述不被忽略。
+投影变化就拒绝，不在过期的手牌索引或界面上执行。状态只在命令边界比较，不逐帧序列化。
+原始 CommunicationMod 文本命令仍按原有协议工作。
+
+`recorder_command` 回执包含 `id`、`command`、`status`（executing/accepted/rejected/query）。
+同步捕获到语义操作时增加 `transaction_id`；排队出牌/结束回合的 `execution_status` 为
+pending/executed/skipped/cancelled，其他直接捕获的操作为 observed。
+accepted 仅说明官方命令解析/提交成功，不保证所有动画结算，
+executed 说明游戏已实际调用对应 useCard/回合逻辑，也不等于动画结束。
+部分选项命令通过输入标记在后续帧生效，可能没有同步事务关联；不伪造执行证明。
+
+拒绝回执带结构化 `error_code`，不依赖自然语言错误文本判定能否恢复：
+
+| error_code | 含义 | execution_status |
+| --- | --- | --- |
+| stale_observation | 提交的前状态 ID 已过期 | not_executed |
+| state_changed | 校验投影发现真实状态变化 | not_executed |
+| invalid_envelope | envelope/Base64/命令文本格式错误 | not_executed |
+| duplicate_command | 指令 ID 重复，不再执行 | not_executed |
+| validation_unavailable | 无法可靠获取/解析当前状态 | not_executed |
+| command_failed | 已进入官方执行器后出现异常 | unknown，或保留已有 pending/observed/executed 证明 |
+
+`not_executed` 只由执行器之前的检查生成。仅前两类可由下游在次数上限内进行
+STATE 刷新后重新决策；必须核对 command_id 和原命令，不能直接重发旧动作。
+其他错误、无结构化回执及未知执行结果不能被自动恢复。查询本身失败应停止。
+
+指令 ID 在最近 4096 个关联请求中去重，重复请求不会再执行。
+回执只维护最近命令，因此客户端必须保持单指令在途，不得流水线发送。
+客户端应同时检查对应回执、正常状态、ready_for_command；采集快照不能作回执。
+超时意味着执行未知，不应盲目重发。协议字段属于消息 envelope，不属于 game_state。
+
+奖励的 `reward_id` 仍是原始唯一对象标识；`reward_ref` 是并行的可读引用（`R1`、`R2` 等）。
+同一对象在当前采集片段中不会因 reward_index 改变或界面重开而重新编号，同名对象的编号不同。
+`linked_reward_ref` 与 `linked_reward_id` 指向相同的互斥奖励；`source_reward_ref` 与
+`source_reward_id` 指向相同的卡牌奖励来源。新局/读档片段清空对象注册表后重新编号，
+因此跨文件/片段关联必须使用 run_id、segment_id 和原始标识，不能只用 `R1`。
+原始动作事务仍使用 reward_id，新增可读引用不改变匹配方式。
 
 ### 卡牌运行时标记
 

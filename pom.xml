@@ -6,7 +6,7 @@
 
     <groupId>action-recorder</groupId>
     <artifactId>action-recorder</artifactId>
-    <version>0.1.5-SNAPSHOT</version>
+    <version>0.1.6-SNAPSHOT</version>
     <packaging>jar</packaging>
     <name>StS Action Recorder</name>
     <description>High-level in-game decision event recorder for Slay the Spire.</description>
@@ -19,6 +19,8 @@
         <SlayTheSpire.version>12-22-2020</SlayTheSpire.version>
         <ModTheSpire.version>3.23.2</ModTheSpire.version>
         <BaseMod.version>5.33.1</BaseMod.version>
+        <!-- Skip only the package-time installation, never test validation. -->
+        <actionrecorder.install.skip>false</actionrecorder.install.skip>
     </properties>
 
     <dependencies>
@@ -63,8 +65,90 @@
                 <version>1.8</version>
                 <executions>
                     <execution>
+                        <id>verify-communication-bytecode</id>
+                        <phase>test</phase>
+                        <configuration>
+                            <skip>${maven.test.skip}</skip>
+                            <target>
+                                <java classname="actionrecorder.PatchBindingSmoke"
+                                      fork="true" failonerror="true">
+                                    <classpath>
+                                        <path refid="maven.test.classpath"/>
+                                        <pathelement location="${Steam.path}/workshop/content/646570/2131373661/CommunicationMod.jar"/>
+                                    </classpath>
+                                </java>
+                                <java classname="actionrecorder.PatchInstrumentationSmoke"
+                                      fork="true" failonerror="true">
+                                    <classpath>
+                                        <path refid="maven.test.classpath"/>
+                                        <pathelement location="${Steam.path}/workshop/content/646570/2131373661/CommunicationMod.jar"/>
+                                    </classpath>
+                                </java>
+                                <java classname="actionrecorder.CommunicationSerializationSmoke"
+                                      fork="true" failonerror="true">
+                                    <arg value="--if-installed"/>
+                                    <classpath>
+                                        <path refid="maven.test.classpath"/>
+                                        <pathelement location="${Steam.path}/workshop/content/646570/2131373661/CommunicationMod.jar"/>
+                                    </classpath>
+                                </java>
+                                <java classname="actionrecorder.QueuedDecisionTrackerSmoke"
+                                      fork="true" failonerror="true">
+                                    <classpath><path refid="maven.test.classpath"/></classpath>
+                                </java>
+                                <java classname="actionrecorder.RuntimeStateFieldsSmoke"
+                                      fork="true" failonerror="true">
+                                    <classpath><path refid="maven.test.classpath"/></classpath>
+                                </java>
+                                <java classname="actionrecorder.JournalIdentitySmoke"
+                                      fork="true" failonerror="true">
+                                    <classpath><path refid="maven.test.classpath"/></classpath>
+                                </java>
+                                <java classname="actionrecorder.runtime.CommunicationSnapshotSmoke"
+                                      fork="true" failonerror="true">
+                                    <classpath><path refid="maven.test.classpath"/></classpath>
+                                </java>
+                                <java classname="actionrecorder.DecisionStateSmoke"
+                                      fork="true" failonerror="true">
+                                    <classpath><path refid="maven.test.classpath"/></classpath>
+                                </java>
+                                <java classname="actionrecorder.CampfireOptionsSmoke"
+                                      fork="true" failonerror="true">
+                                    <classpath><path refid="maven.test.classpath"/></classpath>
+                                </java>
+                                <java classname="actionrecorder.runtime.GridCardPreviewsSmoke"
+                                      fork="true" failonerror="true">
+                                    <classpath><path refid="maven.test.classpath"/></classpath>
+                                </java>
+                                <java classname="actionrecorder.RuntimeDescriptionsSmoke"
+                                      fork="true" failonerror="true">
+                                    <classpath><path refid="maven.test.classpath"/></classpath>
+                                </java>
+                                <java classname="actionrecorder.CommandLedgerSmoke"
+                                      fork="true" failonerror="true">
+                                    <classpath>
+                                        <path refid="maven.test.classpath"/>
+                                        <pathelement location="${Steam.path}/workshop/content/646570/2131373661/CommunicationMod.jar"/>
+                                    </classpath>
+                                </java>
+                                <java classname="actionrecorder.CommunicationBytecodeSmoke"
+                                      fork="true" failonerror="true">
+                                    <jvmarg value="-Xverify:all"/>
+                                    <arg value="--if-installed"/>
+                                    <classpath>
+                                        <path refid="maven.test.classpath"/>
+                                        <pathelement location="${Steam.path}/workshop/content/646570/2131373661/CommunicationMod.jar"/>
+                                    </classpath>
+                                </java>
+                            </target>
+                        </configuration>
+                        <goals><goal>run</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>install-local-mod</id>
                         <phase>package</phase>
                         <configuration>
+                            <skip>${actionrecorder.install.skip}</skip>
                             <target>
                                 <copy file="target/${project.artifactId}.jar"
                                       tofile="${Steam.path}/common/SlayTheSpire/mods/${project.artifactId}.jar"/>

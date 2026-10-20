@@ -12,6 +12,7 @@ import javassist.ClassPool;
 import javassist.CtBehavior;
 import javassist.CtClass;
 import javassist.CtMethod;
+import javassist.NotFoundException;
 import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -30,12 +31,20 @@ public final class PatchBindingSmoke {
                 Class<?> patchClass = Class.forName(name, false, PatchBindingSmoke.class.getClassLoader());
                 SpirePatch patch = patchClass.getAnnotation(SpirePatch.class);
                 if (patch == null) continue;
+                String targetName = patch.cls().isEmpty() ? patch.clz().getName() : patch.cls();
+                CtClass target;
+                try {
+                    target = pool.get(targetName);
+                } catch (NotFoundException missingTarget) {
+                    if (!patch.optional()) throw missingTarget;
+                    System.out.println("SKIP " + name + " -> " + targetName
+                            + ": optional target class is not installed");
+                    continue;
+                }
                 for (Method method : patchClass.getDeclaredMethods()) {
                     boolean prefix = method.getAnnotation(SpirePrefixPatch.class) != null;
                     boolean postfix = method.getAnnotation(SpirePostfixPatch.class) != null;
                     if (!prefix && !postfix) continue;
-                    String targetName = patch.cls().isEmpty() ? patch.clz().getName() : patch.cls();
-                    CtClass target = pool.get(targetName);
                     CtBehavior original = resolve(pool, target, patch);
                     CtClass[] signature = new CtClass[method.getParameterTypes().length];
                     for (int i = 0; i < signature.length; i++) {

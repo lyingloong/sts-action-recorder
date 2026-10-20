@@ -39,7 +39,7 @@ import java.util.concurrent.TimeUnit;
  */
 public final class ActionRecorderRuntime {
     private static final ActionRecorderRuntime INSTANCE = new ActionRecorderRuntime();
-    private static final String MOD_VERSION = "0.1.5";
+    private static final String MOD_VERSION = "0.1.6";
     private static final String SCHEMA_VERSION = "0.5";
 
     private final String host;
@@ -191,6 +191,7 @@ public final class ActionRecorderRuntime {
     }
 
     public synchronized String rewardId(Object reward) { return rewardIdentity.id(reward); }
+    public synchronized String rewardReference(Object reward) { return rewardIdentity.reference(reward); }
 
     public synchronized String cardRewardSourceDetails() {
         CardRewardScreen screen = AbstractDungeon.cardRewardScreen;
@@ -240,11 +241,14 @@ public final class ActionRecorderRuntime {
             beginDecision();
         }
         String transactionId = transactionStack.pop();
+        String commandId = CommandLedger.INSTANCE.activeId();
+        CommandLedger.INSTANCE.link(transactionId, tracked);
         String selected = "{\"id\":" + quote(id)
                 + ",\"kind\":" + quote(kind)
                 + (details == null || details.length() == 0 ? "" : "," + details)
                 + "}";
         emit("action_accepted", "\"transaction_id\":" + quote(transactionId)
+                + ",\"command_id\":" + quote(commandId)
                 + ",\"execution_tracking\":" + tracked
                 + ",\"action\":" + selected
                 + ",\"chosen_action\":" + selected);
@@ -426,6 +430,8 @@ public final class ActionRecorderRuntime {
             // matching, but are NOT command replies or decision-ready events.
             // Preserve CM's original readiness; consumers distinguish purpose.
             stateBridge.stampSnapshotMetadata(root);
+            if (stateBridge.snapshotKind() == null) CommandLedger.INSTANCE.observe(publishedStateId, message);
+            CommandLedger.INSTANCE.stamp(root);
             JsonObject saved = new JsonParser().parse(root.toString()).getAsJsonObject();
             if (saved.has("game_state") && saved.get("game_state").isJsonObject()) {
                 JsonObject state = saved.getAsJsonObject("game_state");
@@ -486,6 +492,8 @@ public final class ActionRecorderRuntime {
         if (!captureMode.enabled() || item == null || item.card == null) {
             return;
         }
+        if (queuedDecisions.hasPending(item)
+                || (queuedDecisions.active() != null && queuedDecisions.active().item == item)) return;
         AbstractCard card = item.card;
         int handIndex = -1;
         if (AbstractDungeon.player != null && AbstractDungeon.player.hand != null) {
@@ -579,6 +587,7 @@ public final class ActionRecorderRuntime {
         QueuedDecisionTracker.Entry<Object> active = queuedDecisions.active();
         if (active == null || active.dispatched) return;
         active.dispatched = true;
+        CommandLedger.INSTANCE.execution(active.transactionId, "executed");
         emit("action_execution_result", "\"transaction_id\":" + quote(active.transactionId)
                 + ",\"status\":\"executed\"");
     }
@@ -601,6 +610,7 @@ public final class ActionRecorderRuntime {
     }
 
     private void emitExecutionCancelled(QueuedDecisionTracker.Entry<Object> entry, String status, String reason) {
+        CommandLedger.INSTANCE.execution(entry.transactionId, status);
         emit("action_execution_result", "\"transaction_id\":" + quote(entry.transactionId)
                 + ",\"status\":" + quote(status) + ",\"reason\":" + quote(reason));
     }

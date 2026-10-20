@@ -4,6 +4,8 @@ import actionrecorder.runtime.ActionRecorderRuntime;
 import actionrecorder.runtime.RuntimeStateFields;
 import actionrecorder.runtime.RuntimeDescriptions;
 import actionrecorder.runtime.MatchGameState;
+import actionrecorder.runtime.CampfireOptions;
+import actionrecorder.runtime.GridCardPreviews;
 import com.evacipated.cardcrawl.modthespire.lib.SpirePatch;
 import com.evacipated.cardcrawl.modthespire.lib.SpirePostfixPatch;
 import com.evacipated.cardcrawl.modthespire.lib.SpireInstrumentPatch;
@@ -42,6 +44,16 @@ public final class CommunicationStatePatches {
     private CommunicationStatePatches() {
     }
 
+    /** Runtime UI text in the exact rest_options / CHOOSE index order. */
+    @SpirePatch(cls = "communicationmod.GameStateConverter", method = "getRoomState",
+            requiredModId = "CommunicationMod", optional = true)
+    public static class RestOptionDescriptions {
+        @SpirePostfixPatch public static HashMap<String, Object> postfix(HashMap<String, Object> __result) {
+            CampfireOptions.addRoomState(__result);
+            return __result;
+        }
+    }
+
     /** Same order as CommunicationMod choices; do not expose unopened cards. */
     @SpirePatch(cls = "communicationmod.GameStateConverter", method = "getCombatRewardState",
             requiredModId = "CommunicationMod", optional = true)
@@ -59,8 +71,10 @@ public final class CommunicationStatePatches {
                 Map<String, Object> value = (Map<String, Object>) values.get(i);
                 com.megacrit.cardcrawl.rewards.RewardItem reward = rewards.get(i);
                 value.put("reward_id", ActionRecorderRuntime.getInstance().rewardId(reward));
+                value.put("reward_ref", ActionRecorderRuntime.getInstance().rewardReference(reward));
                 value.put("reward_index", i);
                 value.put("linked_reward_id", ActionRecorderRuntime.getInstance().rewardId(reward.relicLink));
+                value.put("linked_reward_ref", ActionRecorderRuntime.getInstance().rewardReference(reward.relicLink));
             }
             return __result;
         }
@@ -71,6 +85,9 @@ public final class CommunicationStatePatches {
     public static class CardRewardSource {
         @SpirePostfixPatch public static HashMap<String, Object> postfix(HashMap<String, Object> __result) {
             if (__result != null) __result.put("source_reward_id", ActionRecorderRuntime.getInstance().rewardId(
+                    com.megacrit.cardcrawl.dungeons.AbstractDungeon.cardRewardScreen == null ? null
+                    : com.megacrit.cardcrawl.dungeons.AbstractDungeon.cardRewardScreen.rItem));
+            if (__result != null) __result.put("source_reward_ref", ActionRecorderRuntime.getInstance().rewardReference(
                     com.megacrit.cardcrawl.dungeons.AbstractDungeon.cardRewardScreen == null ? null
                     : com.megacrit.cardcrawl.dungeons.AbstractDungeon.cardRewardScreen.rItem));
             return __result;
@@ -91,6 +108,7 @@ public final class CommunicationStatePatches {
                 if (!(values.get(i) instanceof Map)) continue;
                 Map<String, Object> value = (Map<String, Object>) values.get(i);
                 value.put("reward_id", ActionRecorderRuntime.getInstance().rewardId(relics.get(i)));
+                value.put("reward_ref", ActionRecorderRuntime.getInstance().rewardReference(relics.get(i)));
                 value.put("reward_index", i);
             }
             return __result;
@@ -152,7 +170,7 @@ public final class CommunicationStatePatches {
     public static class RelicDescription {
         @SpirePostfixPatch public static HashMap<String, Object> postfix(
                 HashMap<String, Object> __result, AbstractRelic relic) {
-            if (__result != null && relic != null) RuntimeDescriptions.addText(__result, relic.description);
+            if (__result != null && relic != null) RuntimeDescriptions.addRelic(__result, relic);
             return __result;
         }
     }
@@ -249,16 +267,7 @@ public final class CommunicationStatePatches {
             __result.put("confirm_screen_up", screen.confirmScreenUp);
             __result.put("any_number", screen.anyNumber);
             __result.put("for_clarity", screen.forClarity);
-            Object hovered = privateValue(screen, "hoveredCard");
-            HashMap<String, Object> confirmation = null;
-            if (screen.confirmScreenUp && hovered instanceof AbstractCard) {
-                AbstractCard card = (AbstractCard) hovered;
-                confirmation = new HashMap<String, Object>();
-                confirmation.put("id", card.cardID);
-                confirmation.put("name", card.name);
-                confirmation.put("uuid", String.valueOf(card.uuid));
-            }
-            __result.put("confirmation_card", confirmation);
+            GridCardPreviews.addGridState(__result, screen, CommunicationStatePatches::convertPublicCard);
             return __result;
         }
     }

@@ -14,6 +14,16 @@ import java.util.Map;
 /** Execute the actual serializer replacement with CM's shaded Gson, no game boot. */
 public final class CommunicationSerializationSmoke {
     public static void main(String[] args) throws Exception {
+        if (args.length > 1 || (args.length == 1 && !"--if-installed".equals(args[0])))
+            throw new IllegalArgumentException("Usage: CommunicationSerializationSmoke [--if-installed]");
+        try {
+            Class.forName("com.autoplay.gson.Gson", false,
+                    CommunicationSerializationSmoke.class.getClassLoader());
+        } catch (ClassNotFoundException missingOptionalSerializer) {
+            if (args.length == 0) throw missingOptionalSerializer;
+            System.out.println("SKIP CM serializer verification: optional CommunicationMod shaded Gson is not installed");
+            return;
+        }
         CtClass probe = ClassPool.getDefault().makeClass("actionrecorder.testgenerated.NullSerializerProbe");
         probe.addMethod(CtNewMethod.make("public static String legacy(Object value) { return new com.autoplay.gson.Gson().toJson(value); }", probe));
         probe.addMethod(CtNewMethod.make("public static String fixed(Object value) { return new com.autoplay.gson.Gson().toJson(value); }", probe));
