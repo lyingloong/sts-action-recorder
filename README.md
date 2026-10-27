@@ -69,7 +69,8 @@ ActionRecorder 是 TCP 客户端，默认连接 `127.0.0.1:8766`。接收端按 
 
 ## 参与开发
 
-问题反馈、改动原则与提交前检查见 [贡献指南](CONTRIBUTING.md)。GitHub Actions 验证无游戏依赖的
+问题反馈、改动原则与提交前检查见 [贡献指南](CONTRIBUTING.md)。变更记录见 [CHANGELOG](CHANGELOG.md)，
+自动化编码 agent 的仓库约定见 [AGENTS.md](AGENTS.md)。GitHub Actions 验证无游戏依赖的
 Python 工具；Java 构建、补丁校验与实机验收需要开发者本地安装游戏依赖。
 
 ## 许可证
