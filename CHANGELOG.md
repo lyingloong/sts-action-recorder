@@ -12,7 +12,8 @@ No git tags have been cut yet.
 
 ### Added
 
-- `AGENTS.md` and this changelog.
+- `AGENTS.md`, a short agent guide covering build commands, recording invariants and the
+  changelog/commit/push workflow, and this changelog.
 
 ## [0.1.6] - 2026-10-20
 
